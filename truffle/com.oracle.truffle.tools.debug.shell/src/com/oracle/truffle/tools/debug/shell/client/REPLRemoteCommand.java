@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2016, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,7 @@
  */
 package com.oracle.truffle.tools.debug.shell.client;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
@@ -567,14 +568,13 @@ public abstract class REPLRemoteCommand extends REPLCommand {
             }
             final com.oracle.truffle.tools.debug.shell.REPLMessage request = new com.oracle.truffle.tools.debug.shell.REPLMessage();
             request.put(com.oracle.truffle.tools.debug.shell.REPLMessage.OP, "kill");
-            context.displayKillMessage(null);
             return request;
         }
 
         @Override
         void processReply(REPLClientContext context, com.oracle.truffle.tools.debug.shell.REPLMessage[] replies) {
             if (replies[0].get(com.oracle.truffle.tools.debug.shell.REPLMessage.STATUS).equals(com.oracle.truffle.tools.debug.shell.REPLMessage.SUCCEEDED)) {
-                context.displayReply(replies[0].get(com.oracle.truffle.tools.debug.shell.REPLMessage.DISPLAY_MSG));
+                context.notifyKilled();
             } else {
                 context.displayFailReply(replies[0].get(com.oracle.truffle.tools.debug.shell.REPLMessage.DISPLAY_MSG));
             }
@@ -602,7 +602,14 @@ public abstract class REPLRemoteCommand extends REPLCommand {
                 }
             } else {
                 try {
-                    runSource = Source.fromFileName(args[1]);
+
+                    final File file = new File(args[1]);
+                    if (!file.canRead()) {
+                        context.displayFailReply("Can't read file: " + args[1]);
+                        return null;
+                    }
+                    final String path = file.getCanonicalPath();
+                    runSource = Source.fromFileName(path);
                 } catch (IOException e) {
                     context.displayFailReply("Can't find file: " + args[1]);
                     return null;

@@ -2,6 +2,51 @@
 
 This changelog summarizes major changes between Truffle versions relevant to languages implementors building upon the Truffle framework. The main focus is on APIs exported by Truffle.
 
+## Version 0.14
+1-Jul-2016
+* [Source](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/source/Source.html) has been
+rewritten to be more immutable. Once (part of) content of a source is loaded, it cannot be
+changed.
+* Methods `fromNamedAppendableText`, `fromNamedText` and `setFileCaching` of
+`Source` has been deprecated as useless or not well defined
+* New method `Source`.[getURI()](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/source/Source.html#getURI--)
+has been introduced and should be used as a persistent identification of `Source` rather than
+existing `getName()` & co. methods. Debugger is using the `URI` to
+[attach breakpoints](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/debug/Debugger.html#setLineBreakpoint-int-java.net.URI-int-boolean-)
+to not yet loaded sources
+* Debugger introduces new [halt tag](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/debug/DebuggerTags.AlwaysHalt.html) to
+make it easier to simulate concepts like JavaScript's `debugger` statement
+* Debugger can be paused via the Debugger.[pause](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/debug/Debugger.html#pause--)
+method
+* [@CompilationFinal](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/CompilerDirectives.CompilationFinal.html)
+annotation can now specify whether the finality applies to array elements as well
+* [TruffleTCK](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/tck/TruffleTCK.html) has been
+enhanced to test behavior of languages with respect to foreign array objects
+
+
+## Version 0.13
+22-Apr-2016
+* `AcceptMessage` has been deprecated, replaced by
+[MessageResolution](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/interop/MessageResolution.html) &
+[co](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/interop/Resolve.html). annotations.
+Now all message-oriented annotations need to be placed in a single source file.
+That simplifies readability as well as improves incremental compilation in certain systems.
+* Deprecated `Node.assignSourceSection` removed. This reduces the amount of memory
+occupied by [Node](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/nodes/Node.html)
+instance.
+* `PolyglotEngine.Value.execute` is now as fast as direct `CallTarget.call`.
+Using the [PolyglotEngine](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/vm/PolyglotEngine.html)
+abstraction now comes with no overhead. Just [JPDA debuggers](http://wiki.apidesign.org/wiki/Truffle#Debugging_from_NetBeans)
+need to
+[turn debugging on](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/debug/Debugger.html#find-com.oracle.truffle.api.vm.PolyglotEngine-)
+explicitly.
+* Sharing of efficient code/AST between multiple instances of
+[PolyglotEngine](http://lafo.ssw.uni-linz.ac.at/javadoc/truffle/latest/com/oracle/truffle/api/vm/PolyglotEngine.html)
+is possible. Using more than one `PolyglotEngine` resulted in code de-opt previously.
+That isn't the case anymore. Future version of the API will provide explicit control
+over the set of engines that share the code.
+* Simple language JAR no longer contains test classes. There is a separate simple language tests distribution.
+
 ## Version 0.12
 * The Instrumentation Framework has been revised and has new APIs that are integrated into the PolyglotEngine.
 * Instrumentation support required of language implementations is specified as abstract methods on TruffleLanguage.

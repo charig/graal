@@ -22,6 +22,7 @@
  */
 package com.oracle.truffle.api.profiles;
 
+import com.oracle.truffle.api.source.Source;
 import java.net.URLClassLoader;
 import org.junit.runners.BlockJUnit4ClassRunner;
 import org.junit.runners.model.InitializationError;
@@ -31,9 +32,14 @@ public final class SeparateClassloaderTestRunner extends BlockJUnit4ClassRunner 
         super(getFromTestClassloader(clazz));
     }
 
+    private static final boolean JDK8OrEarlier = System.getProperty("java.specification.version").compareTo("1.9") < 0;
+
     private static Class<?> getFromTestClassloader(Class<?> clazz) throws InitializationError {
         try {
-            ClassLoader testClassLoader = new TestClassLoader();
+            // As of JDK9, unit tests are patched into any modules containing the Truffle API.
+            // This means tests can inject classes into Truffle API packages without any class
+            // loader tricks since Truffle and test classes are loaded by the same class loader.
+            ClassLoader testClassLoader = JDK8OrEarlier ? new TestClassLoader() : ClassLoader.getSystemClassLoader();
             return Class.forName(clazz.getName(), true, testClassLoader);
         } catch (ClassNotFoundException e) {
             throw new InitializationError(e);
@@ -54,6 +60,12 @@ public final class SeparateClassloaderTestRunner extends BlockJUnit4ClassRunner 
         @Override
         public Class<?> loadClass(String name) throws ClassNotFoundException {
             if (name.startsWith(Profile.class.getPackage().getName())) {
+                return super.findClass(name);
+            }
+            if (name.contains("ContextStore")) {
+                return super.findClass(name);
+            }
+            if (name.contains(Source.class.getPackage().getName())) {
                 return super.findClass(name);
             }
             return super.loadClass(name);

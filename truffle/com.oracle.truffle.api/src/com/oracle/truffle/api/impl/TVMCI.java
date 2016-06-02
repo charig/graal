@@ -25,8 +25,10 @@
 package com.oracle.truffle.api.impl;
 
 import com.oracle.truffle.api.TruffleLanguage;
+import com.oracle.truffle.api.frame.FrameDescriptor;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
+import com.oracle.truffle.api.source.SourceSection;
 
 /**
  * An interface between Truffle API and hosting virtual machine. Not interesting for regular Truffle
@@ -65,6 +67,13 @@ public abstract class TVMCI {
         if (accessor != null) {
             accessor.onFirstExecution(rootNode);
         }
+        Accessor.DebugSupport debugAccessor = Accessor.debugAccess();
+        if (debugAccessor != null) {
+            final SourceSection section = rootNode.getSourceSection();
+            if (section != null) {
+                debugAccessor.executionSourceSection(section);
+            }
+        }
     }
 
     /**
@@ -79,4 +88,21 @@ public abstract class TVMCI {
         return Accessor.nodesAccess().findLanguage(root);
     }
 
+    /**
+     * Accessor for non-public state in {@link FrameDescriptor}.
+     *
+     * @since 0.14
+     */
+    protected void markFrameMaterializeCalled(FrameDescriptor descriptor) {
+        Accessor.framesAccess().markMaterializeCalled(descriptor);
+    }
+
+    /**
+     * Accessor for non-public state in {@link FrameDescriptor}.
+     *
+     * @since 0.14
+     */
+    protected boolean getFrameMaterializeCalled(FrameDescriptor descriptor) {
+        return Accessor.framesAccess().getMaterializeCalled(descriptor);
+    }
 }

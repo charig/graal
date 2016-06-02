@@ -53,7 +53,6 @@ import com.oracle.truffle.api.utilities.JSONHelper;
 public abstract class Node implements NodeInterface, Cloneable {
     private final NodeClass nodeClass;
     @CompilationFinal private Node parent;
-    @CompilationFinal private SourceSection sourceSection;
 
     /**
      * Marks array fields that are children of this node.
@@ -84,40 +83,12 @@ public abstract class Node implements NodeInterface, Cloneable {
         }
     }
 
-    /**
-     * @deprecated if your node provides source section, override {@link #getSourceSection()} to
-     *             return it - this constructor will be removed
-     * @param sourceSection
-     * @since 0.8 or earlier
-     */
-    @Deprecated
-    protected Node(SourceSection sourceSection) {
-        this();
-        this.sourceSection = sourceSection;
-    }
-
-    /**
-     * @deprecated if your node provides source section, override {@link #getSourceSection()} to
-     *             return it - this method will be removed
-     *
-     * @param section the object representing a section in guest language source code
-     * @since 0.8 or earlier
-     */
-    @Deprecated
-    public void assignSourceSection(SourceSection section) {
-        if (sourceSection != null) {
-            // Patch this test during the transition to constructor-based
-            // source attribution, which would otherwise trigger this
-            // exception. This method will eventually be deprecated.
-            if (getSourceSection() != section) {
-                throw new IllegalStateException("Source section is already assigned. Old: " + getSourceSection() + ", new: " + section);
-            }
-        }
-        this.sourceSection = section;
-    }
-
     NodeClass getNodeClass() {
         return nodeClass;
+    }
+
+    void setParent(Node parent) {
+        this.parent = parent;
     }
 
     /**
@@ -136,18 +107,6 @@ public abstract class Node implements NodeInterface, Cloneable {
             return info.cost();
         }
         return NodeCost.MONOMORPHIC;
-    }
-
-    /**
-     * @deprecated if your node provides source section, override {@link #getSourceSection()} to
-     *             return it - this method will be removed
-     *
-     *             Clears any previously assigned guest language source code from this node.
-     * @since 0.8 or earlier
-     */
-    @Deprecated
-    public void clearSourceSection() {
-        this.sourceSection = null;
     }
 
     /**
@@ -170,7 +129,7 @@ public abstract class Node implements NodeInterface, Cloneable {
      * @since 0.8 or earlier
      */
     public SourceSection getSourceSection() {
-        return sourceSection;
+        return null;
     }
 
     /**
@@ -332,10 +291,6 @@ public abstract class Node implements NodeInterface, Cloneable {
         assert inAtomicBlock();
         if (this.getParent() == null) {
             throw new IllegalStateException("This node cannot be replaced, because it does not yet have a parent.");
-        }
-        if (sourceSection != null && newNode.getSourceSection() == null) {
-            // Pass on the source section to the new node.
-            newNode.assignSourceSection(sourceSection);
         }
         // (aw) need to set parent *before* replace, so that (unsynchronized) getRootNode()
         // will always find the root node

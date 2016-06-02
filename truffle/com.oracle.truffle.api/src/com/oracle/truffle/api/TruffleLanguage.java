@@ -43,12 +43,21 @@ import com.oracle.truffle.api.source.Source;
 import java.util.LinkedHashSet;
 
 /**
- * An entry point for everyone who wants to implement a Truffle based language. By providing an
+ * <p>
+ * An entry point for everyone who wants to implement a Truffle-based language. By providing an
  * implementation of this type and registering it using {@link Registration} annotation, your
  * language becomes accessible to users of the {@link com.oracle.truffle.api.vm.PolyglotEngine
  * polyglot execution engine} - all they will need to do is to include your JAR into their
  * application and all the Truffle goodies (multi-language support, multitenant hosting, debugging,
  * etc.) will be made available to them.
+ *
+ * <p>
+ * To ensure that a Truffle language can be used in a language-agnostic way, the implementation
+ * should be designed to decouple its configuration and initialization from language specifics as
+ * much as possible. One aspect of this is the initialization and start of execution via the
+ * {@link com.oracle.truffle.api.vm.PolyglotEngine}, which should be designed in a generic way.
+ * Language-specific entry points, for instance to emulate the command-line interface of an existing
+ * implementation, should be handled externally.
  *
  * @param <C> internal state of the language associated with every thread that is executing program
  *            {@link #parse(com.oracle.truffle.api.source.Source, com.oracle.truffle.api.nodes.Node, java.lang.String...)
@@ -271,8 +280,7 @@ public abstract class TruffleLanguage<C> {
     /**
      * Generates language specific textual representation of a value. Each language may have special
      * formating conventions - even primitive values may not follow the traditional Java formating
-     * rules. As such when
-     * {@link com.oracle.truffle.api.vm.PolyglotEngine.Value#as(java.lang.Class)
+     * rules. As such when {@link com.oracle.truffle.api.vm.PolyglotEngine.Value#as(java.lang.Class)
      * value.as(String.class)} is requested, it consults the language that produced the value by
      * calling this method. By default this method calls {@link Objects#toString(java.lang.Object)}.
      *
@@ -295,10 +303,8 @@ public abstract class TruffleLanguage<C> {
      *         for this language
      * @since 0.8 or earlier
      */
-    @SuppressWarnings({"rawtypes", "unchecked"})
     protected final Node createFindContextNode() {
-        final Class<? extends TruffleLanguage<?>> c = (Class<? extends TruffleLanguage<?>>) getClass();
-        return new FindContextNode(c);
+        return AccessAPI.engineAccess().createFindContextNode(this);
     }
 
     /**
@@ -318,7 +324,7 @@ public abstract class TruffleLanguage<C> {
     @SuppressWarnings({"rawtypes", "unchecked"})
     protected final C findContext(Node n) {
         FindContextNode fcn = (FindContextNode) n;
-        if (fcn.getLanguageClass() != getClass()) {
+        if (fcn.getTruffleLanguage() != this) {
             throw new ClassCastException();
         }
         return (C) fcn.executeFindContext();
