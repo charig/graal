@@ -22,46 +22,43 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package com.oracle.truffle.api.instrumentation;
+package com.oracle.truffle.tools;
 
-import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.source.SourceSection;
+import com.oracle.truffle.api.instrumentation.Instrumenter;
+import com.oracle.truffle.api.instrumentation.TruffleInstrument;
+import com.oracle.truffle.api.instrumentation.TruffleInstrument.Registration;
 
-/**
- * Represents a source section load event from a {@link LoadSourceSectionListener}.
- *
- * Instances of {@link LoadSourceSectionEvent} should be neither stored, cached nor hashed. The
- * equality and hashing behavior is undefined.
- *
- * @see LoadSourceSectionListener
- * @since 0.15
- */
-public final class LoadSourceSectionEvent {
+@Registration(id = ProfilerInstrument.ID)
+public class ProfilerInstrument extends TruffleInstrument {
+    static final String ID = "profiler";
 
-    private final SourceSection sourceSection;
-    private final Node node;
+    private Profiler profiler;
+    private Instrumenter instrumenter;
 
-    LoadSourceSectionEvent(SourceSection sourceSection, Node node) {
-        this.sourceSection = sourceSection;
-        this.node = node;
+    @Override
+    protected void onCreate(Env env) {
+        this.instrumenter = env.getInstrumenter();
+        env.registerService(this);
     }
 
-    /**
-     * Returns the loaded source section that caused this event.
-     *
-     * @since 0.15
-     */
-    public SourceSection getSourceSection() {
-        return sourceSection;
+    @Override
+    protected void onDispose(Env env) {
+        if (profiler != null) {
+            profiler.dispose();
+        }
     }
 
-    /**
-     * Returns the instrumentable Truffle node that caused this event.
-     *
-     * @since 0.15
-     */
-    public Node getNode() {
-        return node;
+    Profiler getProfiler(Factory factory) {
+        if (profiler == null && factory != null) {
+            profiler = factory.create(instrumenter);
+            if (profiler == null) {
+                throw new NullPointerException();
+            }
+        }
+        return profiler;
     }
 
+    interface Factory {
+        Profiler create(Instrumenter instrumenter);
+    }
 }
