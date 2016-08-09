@@ -29,29 +29,36 @@ import org.junit.Test;
 
 import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.object.DynamicObjectFactory;
-import com.oracle.truffle.api.object.dsl.test.alternate_package.InheritedShapeBaseLayout;
-import com.oracle.truffle.api.object.dsl.test.alternate_package.InheritedShapeBaseLayoutImpl;
-import com.oracle.truffle.api.object.dsl.test.alternate_package.InheritedShapeTopLayout;
-import com.oracle.truffle.api.object.dsl.test.alternate_package.InheritedShapeTopLayoutImpl;
+import com.oracle.truffle.api.object.dsl.Layout;
 
-public class InheritedShapePropertiesTest {
+public class BuildArgumentsTest {
 
-    private static final InheritedShapeBaseLayout BASE_LAYOUT = InheritedShapeBaseLayoutImpl.INSTANCE;
-    private static final InheritedShapeTopLayout TOP_LAYOUT = InheritedShapeTopLayoutImpl.INSTANCE;
+    @Layout
+    public interface PrepareArgumentsLayout {
 
-    @Test
-    public void testBase() {
-        final DynamicObjectFactory factory = BASE_LAYOUT.createInheritedShapeBaseShape(14);
-        final DynamicObject object = BASE_LAYOUT.createInheritedShapeBase(factory);
-        Assert.assertEquals(14, BASE_LAYOUT.getA(object));
+        DynamicObjectFactory createPrepareArgumentsShape(int shapeProperty);
+
+        Object[] build(int a, Object b);
+
+        int getShapeProperty(DynamicObject object);
+
+        void setShapeProperty(DynamicObject object, int value);
+
+        int getA(DynamicObject object);
+
+        Object getB(DynamicObject object);
+
     }
 
+    private static final PrepareArgumentsLayout LAYOUT = PrepareArgumentsLayoutImpl.INSTANCE;
+
     @Test
-    public void testTop() {
-        final DynamicObjectFactory factory = TOP_LAYOUT.createInheritedShapeTopShape(14, 2);
-        final DynamicObject object = TOP_LAYOUT.createInheritedShapeTop(factory);
-        Assert.assertEquals(14, TOP_LAYOUT.getA(object));
-        Assert.assertEquals(2, TOP_LAYOUT.getB(object));
+    public void testCreate() {
+        final DynamicObjectFactory factory = LAYOUT.createPrepareArgumentsShape(14);
+        final DynamicObject object = factory.newInstance(LAYOUT.build(1, 2));
+        Assert.assertEquals(14, LAYOUT.getShapeProperty(object));
+        Assert.assertEquals(1, LAYOUT.getA(object));
+        Assert.assertEquals(2, LAYOUT.getB(object));
     }
 
 }

@@ -22,21 +22,19 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package com.oracle.truffle.api.interop.java;
+package com.oracle.truffle.api.object.dsl.test.alternate_package;
 
-import com.oracle.truffle.api.interop.TruffleObject;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.DynamicObjectFactory;
+import com.oracle.truffle.api.object.dsl.Layout;
 
-@RunWith(SeparateClassloaderTestRunner.class)
-public class InteropCheckForNullTest {
-    @Test
-    public void showHowToCheckForNull() {
-        assertTrue("Yes, it is null", JavaInteropSnippets.isNullValue(JavaObject.NULL));
+@Layout
+public interface InheritedShapeTopLayout extends InheritedShapeBaseLayout {
 
-        TruffleObject nonNullValue = JavaInterop.asTruffleObject(this);
-        assertFalse("No, it is not null", JavaInteropSnippets.isNullValue(nonNullValue));
-    }
+    DynamicObjectFactory createInheritedShapeTopShape(int a, int b);
+
+    DynamicObject createInheritedShapeTop(DynamicObjectFactory factory);
+
+    int getB(DynamicObject object);
+
 }

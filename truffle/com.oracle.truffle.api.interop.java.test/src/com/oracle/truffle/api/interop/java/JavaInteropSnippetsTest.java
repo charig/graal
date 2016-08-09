@@ -25,19 +25,34 @@
 package com.oracle.truffle.api.interop.java;
 
 import com.oracle.truffle.api.interop.TruffleObject;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import org.junit.BeforeClass;
 
-final class JavaInteropSnippets {
-    // BEGIN: JavaInteropSnippets#isNullValue
-    interface IsNullChecker {
-        @MethodMessage(message = "IS_NULL")
-        boolean isNull();
+@RunWith(SeparateClassloaderTestRunner.class)
+public class JavaInteropSnippetsTest {
+    private static boolean loadedOK;
+
+    @BeforeClass
+    public static void isAvailable() {
+        try {
+            loadedOK = JavaInteropSnippets.loaded;
+        } catch (LinkageError ex) {
+            // ignore
+        }
     }
 
-    public static boolean isNullValue(TruffleObject obj) {
-        IsNullChecker check = JavaInterop.asJavaFunction(IsNullChecker.class, obj);
-        return check.isNull();
-    }
-    // END: JavaInteropSnippets#isNullValue
+    @Test
+    public void showHowToCheckForNull() {
+        if (!loadedOK) {
+            return;
+        }
 
-    public static boolean loaded = true;
+        assertTrue("Yes, it is null", JavaInteropSnippets.isNullValue(JavaObject.NULL));
+
+        TruffleObject nonNullValue = JavaInterop.asTruffleObject(this);
+        assertFalse("No, it is not null", JavaInteropSnippets.isNullValue(nonNullValue));
+    }
 }

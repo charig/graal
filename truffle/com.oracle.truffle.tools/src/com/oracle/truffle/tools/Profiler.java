@@ -34,6 +34,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.frame.FrameDescriptor;
 import com.oracle.truffle.api.frame.FrameSlot;
 import com.oracle.truffle.api.frame.FrameSlotKind;
@@ -48,6 +49,7 @@ import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
 import com.oracle.truffle.api.instrumentation.SourceSectionFilter.Builder;
 import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.nodes.NodeCost;
+import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.source.SourceSection;
 import com.oracle.truffle.api.vm.PolyglotEngine;
@@ -72,8 +74,6 @@ import com.oracle.truffle.tools.Profiler.Counter.TimeKind;
  * @since 0.15
  */
 public final class Profiler {
-
-    private static final int MAX_CODE_LENGTH = 30;
 
     /**
      * Finds profiler associated with given engine. There is at most one profiler associated with
@@ -315,7 +315,8 @@ public final class Profiler {
         SourceSection sourceSection = context.getInstrumentedSourceSection();
         Counter counter = counters.get(sourceSection);
         if (counter == null) {
-            counter = new Counter(sourceSection);
+            final RootNode rootNode = context.getInstrumentedNode().getRootNode();
+            counter = new Counter(sourceSection, rootNode == null ? "<unknown>>" : rootNode.getName());
             counters.put(sourceSection, counter);
         }
         if (isTiming) {
@@ -368,8 +369,8 @@ public final class Profiler {
         });
 
         out.println("Truffle profiler histogram for mode " + time);
-        out.println(String.format("%12s | %7s | %11s | %7s | %11s | %-30s | %s ", //
-                        "Invoc", "Total", "PerInvoc", "SelfTime", "PerInvoc", "Source", "Code"));
+        out.println(String.format("%12s | %7s | %11s | %7s | %11s | %-15s | %s ", //
+                        "Invoc", "Total", "PerInvoc", "SelfTime", "PerInvoc", "Name", "Source"));
         for (Counter counter : sortedCounters) {
             final long invocations = counter.getInvocations(time);
             if (invocations <= 0L) {
@@ -377,25 +378,12 @@ public final class Profiler {
             }
             double totalTimems = counter.getTotalTime(time) / 1000000.0d;
             double selfTimems = counter.getSelfTime(time) / 1000000.0d;
-            out.println(String.format("%12d |%6.0fms |%10.3fms |%7.0fms |%10.3fms | %-30s | %s", //
+            out.println(String.format("%12d |%6.0fms |%10.3fms |%7.0fms |%10.3fms | %-15s | %s", //
                             invocations, totalTimems, totalTimems / invocations,  //
                             selfTimems, selfTimems / invocations, //
-                            getShortDescription(counter.getSourceSection()), getShortSource(counter.getSourceSection())));
+                            counter.getName(), getShortDescription(counter.getSourceSection())));
         }
         out.println();
-    }
-
-    private static Object getShortSource(SourceSection sourceSection) {
-        if (sourceSection.getSource() == null) {
-            return "<unknown>";
-        }
-
-        String code = sourceSection.getCode();
-        if (code.length() > MAX_CODE_LENGTH) {
-            code = code.substring(0, MAX_CODE_LENGTH);
-        }
-
-        return code.replaceAll("\\n", "\\\\n");
     }
 
     // custom version of SourceSection#getShortDescription
@@ -409,22 +397,12 @@ public final class Profiler {
         } else {
             b.append("<unknown>");
         }
-        b.append(":line=");
-
+        b.append(":");
         if (sourceSection.getStartLine() == sourceSection.getEndLine()) {
             b.append(sourceSection.getStartLine());
-
         } else {
             b.append(sourceSection.getStartLine()).append("-").append(sourceSection.getEndLine());
         }
-
-        b.append(":chars=");
-        if (sourceSection.getCharIndex() == sourceSection.getEndColumn()) {
-            b.append(sourceSection.getCharIndex());
-        } else {
-            b.append(sourceSection.getCharIndex()).append("-").append(sourceSection.getEndColumn());
-        }
-
         return b.toString();
     }
 
@@ -458,10 +436,10 @@ public final class Profiler {
         protected void onDispose(VirtualFrame frame) {
             FrameDescriptor frameDescriptor = context.getInstrumentedNode().getRootNode().getFrameDescriptor();
             if (frameDescriptor.getIdentifiers().contains(KEY_TIME_STARTED)) {
-                frameDescriptor.removeFrameSlot(timeStartedSlot);
+                frameDescriptor.removeFrameSlot(KEY_TIME_STARTED);
             }
             if (frameDescriptor.getIdentifiers().contains(KEY_PARENT_COUNTER)) {
-                frameDescriptor.removeFrameSlot(parentCounterSlot);
+                frameDescriptor.removeFrameSlot(KEY_PARENT_COUNTER);
             }
         }
 
@@ -554,13 +532,23 @@ public final class Profiler {
      */
     public static final class Counter {
 
-        enum TimeKind {
+        /**
+         * Identifies the execution mode for timing results.
+         */
+        public enum TimeKind {
+
+            /** Timing results includes both modes of operation. */
             INTERPRETED_AND_COMPILED,
+
+            /** Timing results include only slow-path execution. */
             INTERPRETED,
+
+            /** Timing results include only fast-path execution. */
             COMPILED
         }
 
         private final SourceSection sourceSection;
+        private final String name;
         private long interpretedInvocations;
         private long interpretedChildTime;
         private long interpretedTotalTime;
@@ -574,8 +562,9 @@ public final class Profiler {
          */
         private boolean compiled;
 
-        private Counter(SourceSection sourceSection) {
+        private Counter(SourceSection sourceSection, String name) {
             this.sourceSection = sourceSection;
+            this.name = name;
         }
 
         private void clear() {
@@ -597,9 +586,19 @@ public final class Profiler {
         }
 
         /**
+         * The name of the method/procedure being profiled.
+         *
+         * since 0.16
+         */
+        public String getName() {
+            return name;
+        }
+
+        /**
          * Number of times the program element has been executed since the last time data was
          * {@linkplain #clear() cleared}.
          *
+         * @param kind specifies execution mode for results: slow-path, fast-path, or combined.
          * @since 0.15
          */
         public long getInvocations(TimeKind kind) {
@@ -616,9 +615,10 @@ public final class Profiler {
         }
 
         /**
-         * Total time taken executing the program element since the last time data was
-         * {@linkplain #clear() cleared}.
+         * Total time in nanoseconds taken executing the program element since the last time data
+         * was {@linkplain #clear() cleared}.
          *
+         * @param kind specifies execution mode for results: slow-path, fast-path, or combined.
          * @since 0.15
          */
         public long getTotalTime(TimeKind kind) {
@@ -635,9 +635,10 @@ public final class Profiler {
         }
 
         /**
-         * Self time taken executing the program element since the last time data was
+         * Self time in nanoseconds taken executing the program element since the last time data was
          * {@linkplain #clear() cleared}.
          *
+         * @param kind specifies execution mode for results: slow-path, fast-path, or combined.
          * @since 0.15
          */
         public long getSelfTime(TimeKind kind) {

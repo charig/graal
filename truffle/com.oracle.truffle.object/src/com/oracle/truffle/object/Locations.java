@@ -61,18 +61,7 @@ public abstract class Locations {
 
         @Override
         public boolean equals(Object obj) {
-            if (!super.equals(obj)) {
-                return false;
-            }
-            ValueLocation other = (ValueLocation) obj;
-            if (value == null) {
-                if (other.value != null) {
-                    return false;
-                }
-            } else if (!value.equals(other.value)) {
-                return false;
-            }
-            return true;
+            return super.equals(obj) && Objects.equals(value, ((ValueLocation) obj).value);
         }
 
         @Override
@@ -82,19 +71,19 @@ public abstract class Locations {
 
         @Override
         public final void set(DynamicObject store, Object value, Shape shape) throws IncompatibleLocationException, FinalLocationException {
-            if (!canStoreFinal(store, value)) {
+            if (!canStore(value)) {
                 throw finalLocation();
             }
         }
 
         @Override
-        protected boolean canStoreFinal(DynamicObject store, Object val) {
+        public boolean canStore(Object val) {
             return valueEquals(this.value, val);
         }
 
         @Override
         public final void setInternal(DynamicObject store, Object value) throws IncompatibleLocationException {
-            if (!canStoreFinal(store, value)) {
+            if (!canStore(value)) {
                 CompilerDirectives.transferToInterpreter();
                 throw new UnsupportedOperationException();
             }
@@ -245,6 +234,10 @@ public abstract class Locations {
             result = prime * result + (primitiveLocation == null ? 0 : primitiveLocation.hashCode());
             result = prime * result + (type == null ? 0 : type.hashCode());
             return result;
+        }
+
+        public InternalLongLocation getPrimitiveLocation() {
+            return primitiveLocation;
         }
 
         public ObjectLocation getObjectLocation() {

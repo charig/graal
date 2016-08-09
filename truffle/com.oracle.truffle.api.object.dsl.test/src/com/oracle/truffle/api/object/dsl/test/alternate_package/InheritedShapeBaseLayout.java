@@ -22,22 +22,19 @@
  * or visit www.oracle.com if you need additional information or have any
  * questions.
  */
-package com.oracle.truffle.api.interop.java;
+package com.oracle.truffle.api.object.dsl.test.alternate_package;
 
-import com.oracle.truffle.api.interop.TruffleObject;
+import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.DynamicObjectFactory;
+import com.oracle.truffle.api.object.dsl.Layout;
 
-final class JavaInteropSnippets {
-    // BEGIN: JavaInteropSnippets#isNullValue
-    interface IsNullChecker {
-        @MethodMessage(message = "IS_NULL")
-        boolean isNull();
-    }
+@Layout
+public interface InheritedShapeBaseLayout {
 
-    public static boolean isNullValue(TruffleObject obj) {
-        IsNullChecker check = JavaInterop.asJavaFunction(IsNullChecker.class, obj);
-        return check.isNull();
-    }
-    // END: JavaInteropSnippets#isNullValue
+    DynamicObjectFactory createInheritedShapeBaseShape(int a);
 
-    public static boolean loaded = true;
+    DynamicObject createInheritedShapeBase(DynamicObjectFactory factory);
+
+    int getA(DynamicObject object);
+
 }

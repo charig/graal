@@ -86,7 +86,7 @@ abstract class BasicAllocator extends ShapeImpl.BaseAllocator {
     public Location newObjectLocation(boolean useFinal, boolean nonNull) {
         if (ObjectStorageOptions.InObjectFields) {
             int insertPos = objectFieldSize;
-            while (insertPos + OBJECT_SIZE <= getLayout().getObjectFieldCount()) {
+            if (insertPos + OBJECT_SIZE <= getLayout().getObjectFieldCount()) {
                 return advance((Location) getLayout().getObjectFieldLocation(insertPos));
             }
         }
@@ -155,7 +155,6 @@ abstract class BasicAllocator extends ShapeImpl.BaseAllocator {
 
     @Override
     protected Location locationForValueUpcast(Object value, Location oldLocation) {
-        assert !(value instanceof Class);
         if (oldLocation instanceof DualLocation) {
             DualLocation dualLocation = (DualLocation) oldLocation;
             if (dualLocation.getType() == null) {
@@ -171,7 +170,13 @@ abstract class BasicAllocator extends ShapeImpl.BaseAllocator {
                     return dualLocation.changeType(Object.class);
                 }
             } else if (dualLocation.getType().isPrimitive()) {
-                return dualLocation.changeType(Object.class);
+                if (dualLocation.getType() == int.class && layout.isAllowedIntToLong() && value instanceof Long) {
+                    return dualLocation.changeType(long.class);
+                } else if (dualLocation.getType() == int.class && layout.isAllowedIntToDouble() && value instanceof Double) {
+                    return dualLocation.changeType(double.class);
+                } else {
+                    return dualLocation.changeType(Object.class);
+                }
             } else {
                 throw new UnsupportedOperationException();
             }
