@@ -52,6 +52,7 @@ import com.oracle.truffle.api.instrumentation.ExecutionEventListener;
 import com.oracle.truffle.api.instrumentation.Instrumenter;
 import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
 import com.oracle.truffle.api.instrumentation.StandardTags.CallTag;
+import com.oracle.truffle.api.instrumentation.StandardTags.RootTag;
 import com.oracle.truffle.api.instrumentation.StandardTags.StatementTag;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
@@ -92,6 +93,7 @@ public final class Debugger {
 
     private static final SourceSectionFilter CALL_FILTER = SourceSectionFilter.newBuilder().tagIs(CallTag.class).build();
     private static final SourceSectionFilter HALT_FILTER = SourceSectionFilter.newBuilder().tagIs(StatementTag.class).build();
+    private static final SourceSectionFilter ROOT_FILTER = SourceSectionFilter.newBuilder().tagIs(RootTag.class).build();
     private static final Assumption NO_DEBUGGER = Truffle.getRuntime().createAssumption("No debugger assumption");
 
     private static boolean matchesHaltFilter(EventContext eventContext) {
@@ -187,12 +189,14 @@ public final class Debugger {
 
         @TruffleBoundary
         public void haltedAt(EventContext eventContext, MaterializedFrame mFrame, Breakpoint breakpoint) {
-            if (currentDebugContext == null) {
+            DebugExecutionContext context = getCurrentDebugContext();
+            if (context == null) {
                 final SourceSection sourceSection = eventContext.getInstrumentedNode().getSourceSection();
                 assert sourceSection != null;
-                currentDebugContext = new DebugExecutionContext(sourceSection.getSource(), null, 0);
+                context = new DebugExecutionContext(sourceSection.getSource(), null, 0);
+                setCurrentDebugContext(context);
             }
-            final StepStrategy strategy = currentDebugContext.strategy;
+            final StepStrategy strategy = context.strategy;
             /*
              * Check to see if this breakpoint is at a location where the current stepping strategy
              * underway, if any, would halt. If so, then avoid the double-halt by ignoring the
@@ -209,9 +213,9 @@ public final class Debugger {
              * take place before a halt at the same location caused by a stepping strategy.
              */
             if (strategy != null && strategy.wouldHaltAt(eventContext)) {
-                currentDebugContext.trace("REDUNDANT HALT, breakpoint@" + breakpoint.getLocationDescription());
+                context.trace("REDUNDANT HALT, breakpoint@" + breakpoint.getLocationDescription());
             } else {
-                currentDebugContext.halt(eventContext, mFrame, HaltPosition.BEFORE, breakpoint);
+                context.halt(eventContext, mFrame, HaltPosition.BEFORE, breakpoint);
             }
         }
     };
@@ -219,15 +223,58 @@ public final class Debugger {
     private WarningLog warningLog = new WarningLog() {
 
         public void addWarning(String warning) {
-            assert currentDebugContext != null;
-            currentDebugContext.logWarning(warning);
+            DebugExecutionContext context = getCurrentDebugContext();
+            assert context != null;
+            context.logWarning(warning);
         }
     };
 
     /**
-     * Head of the stack of executions.
+     * Representing the head of the stack of executions per thread. Note, this is meant for a 1:n
+     * setting of 1 polyglot engine and n threads. Currently, these additional threads are not
+     * officially supported, and need to be initialized manually with
+     * {@link #executionStarted(int, Source)}. They should also be probably deinitalized with
+     * {@link #executionEnded()}.
      */
-    private DebugExecutionContext currentDebugContext;
+    private ThreadLocal<DebugExecutionContext> currentDebugContext = new ThreadLocal<>();
+
+    /**
+     * @return Head of the stack of executions.
+     */
+    private DebugExecutionContext getCurrentDebugContext() {
+        return currentDebugContext.get();
+    }
+
+    /**
+     * @param currentDebugContext the head of the stack of executions.
+     */
+    private void setCurrentDebugContext(DebugExecutionContext context) {
+        currentDebugContext.set(context);
+    }
+
+    /**
+     * Sets a breakpoint to halt at a source section.
+     * <p>
+     * If a breakpoint <em>condition</em> is applied to the breakpoint, then the condition will be
+     * assumed to be in the same language as the code location where attached.
+     *
+     *
+     * @param ignoreCount number of hits to ignore before halting
+     * @param sourceSection where to set the breakpoint
+     * @param oneShot breakpoint disposes itself after fist hit, if {@code true}
+     * @return a new breakpoint, initially enabled
+     * @throws IOException if the breakpoint can not be set.
+     * @since TBD
+     */
+    @TruffleBoundary
+    public Breakpoint setSourceSectionBreakpoint(int ignoreCount, SourceSection sourceSection, boolean oneShot) throws IOException {
+        return breakpoints.create(ignoreCount, sourceSection, oneShot);
+    }
+
+    @TruffleBoundary
+    public Breakpoint setSourceSectionBreakpoint(int ignoreCount, URI sourceUri, int startLine, int startColumn, int charLength, boolean oneShort) throws IOException {
+        return breakpoints.create(ignoreCount, sourceUri, startLine, startColumn, charLength, oneShort);
+    }
 
     /**
      * Sets a breakpoint to halt at a source line.
@@ -288,6 +335,14 @@ public final class Debugger {
         throw new UnsupportedOperationException();
     }
 
+    public Breakpoint getBreakpoint(LineLocation line) {
+        return breakpoints.get(line);
+    }
+
+    public Breakpoint getBreakpoint(SourceSection section) {
+        return breakpoints.get(section);
+    }
+
     /**
      * Gets all existing breakpoints, whatever their status, in natural sorted order. Modification
      * save.
@@ -311,7 +366,7 @@ public final class Debugger {
      * @since 0.14
      */
     public boolean pause() {
-        DebugExecutionContext dc = currentDebugContext;
+        DebugExecutionContext dc = getCurrentDebugContext();
         if (dc != null) {
             dc.doPause();
             return true;
@@ -332,8 +387,8 @@ public final class Debugger {
      * </ul>
      */
     @TruffleBoundary
-    void prepareContinue(int depth) {
-        currentDebugContext.setAction(depth, new Continue());
+    void prepareContinue(DebugExecutionContext context, int depth) {
+        context.setAction(depth, new Continue());
     }
 
     /**
@@ -353,11 +408,34 @@ public final class Debugger {
      * @throws IllegalArgumentException if the specified number is {@code <= 0}
      */
     @TruffleBoundary
-    void prepareStepInto(int stepCount) {
+    void prepareStepInto(DebugExecutionContext context, int stepCount) {
         if (stepCount <= 0) {
             throw new IllegalArgumentException();
         }
-        currentDebugContext.setAction(new StepInto(stepCount));
+        context.setAction(new StepInto(stepCount));
+    }
+
+    /**
+     * Prepare to <em>StepUntilRootTag</em> when guest language program execution resumes. In this
+     * mode:
+     * <ul>
+     * <li>User breakpoints are disabled.</li>
+     * <li>Execution will continue until either:
+     * <ol>
+     * <li>execution arrives at a node holding {@link #ROOT_TAG}, <strong>or:</strong></li>
+     * <li>execution completes.</li>
+     * </ol>
+     * <li>StepUntilRootTag mode persists only through one resumption, and reverts by default to
+     * Continue mode.</li>
+     * </ul>
+     */
+    @TruffleBoundary
+    void prepareStepUntilRootTag(DebugExecutionContext context) {
+        context.setAction(new StepUntilRootTag());
+    }
+
+    public void prepareStepUntilRootTag() {
+        prepareStepUntilRootTag(getCurrentDebugContext());
     }
 
     /**
@@ -375,8 +453,8 @@ public final class Debugger {
      * </ul>
      */
     @TruffleBoundary
-    void prepareStepOut() {
-        currentDebugContext.setAction(new StepOut());
+    void prepareStepOut(DebugExecutionContext context) {
+        context.setAction(new StepOut());
     }
 
     /**
@@ -398,11 +476,11 @@ public final class Debugger {
      * @throws IllegalArgumentException if the specified number is {@code <= 0}
      */
     @TruffleBoundary
-    void prepareStepOver(int stepCount) {
+    void prepareStepOver(DebugExecutionContext context, int stepCount) {
         if (stepCount <= 0) {
             throw new IllegalArgumentException();
         }
-        currentDebugContext.setAction(new StepOver(stepCount));
+        context.setAction(new StepOver(stepCount));
     }
 
     Instrumenter getInstrumenter() {
@@ -597,6 +675,58 @@ public final class Debugger {
         @Override
         boolean wouldHaltAt(EventContext eventContext) {
             return matchesHaltFilter(eventContext) && unfinishedStepCount <= 1;
+        }
+    }
+
+    /**
+     * Strategy: per-{@link #ROOT_TAG} stepping.
+     * <ul>
+     * <li>User breakpoints are enabled.</li>
+     * <li>Execution continues until either:
+     * <ol>
+     * <li>execution <em>arrives</em> at a {@link #ROOT_TAG} node, <strong>or:</strong></li>
+     * <li>execution completes.</li>
+     * </ol>
+     * </ul>
+     *
+     * @see Debugger#prepareStepInto(int)
+     */
+    private final class StepUntilRootTag extends StepStrategy {
+        private EventBinding<?> beforeRootBinding;
+
+        @Override
+        protected void setStrategy(final int startStackDepth) {
+            traceAction("SET ACTION", startStackDepth, -1);
+            beforeRootBinding = instrumenter.attachListener(ROOT_FILTER, new ExecutionEventListener() {
+
+                public void onEnter(EventContext eventContext, VirtualFrame frame) {
+                    // Normal step, "before" halt location
+                    traceAction("BEGIN onEnter()", startStackDepth, -1);
+                    halt(eventContext, frame.materialize(), HaltPosition.BEFORE);
+                    traceAction("END onEnter()", startStackDepth, -1);
+                }
+
+                public void onReturnValue(EventContext eventContext, VirtualFrame frame, Object result) {
+                }
+
+                public void onReturnExceptional(EventContext eventContext, VirtualFrame frame, Throwable exception) {
+                }
+            });
+        }
+
+        @Override
+        protected void unsetStrategy() {
+            if (beforeRootBinding == null) {
+                // Instrumentation/language failure
+                return;
+            }
+            traceAction("CLEAR ACTION", -1, -1);
+            beforeRootBinding.dispose();
+        }
+
+        @Override
+        boolean wouldHaltAt(EventContext eventContext) {
+            return matchesHaltFilter(eventContext);
         }
     }
 
@@ -885,7 +1015,7 @@ public final class Debugger {
      * <p>
      * Each instance is single-use.
      */
-    private final class DebugExecutionContext {
+    final class DebugExecutionContext {
 
         // Previous halted context in stack
         private final DebugExecutionContext predecessor;
@@ -933,6 +1063,10 @@ public final class Debugger {
             if (TRACE) {
                 trace("NEW DEBUG CONTEXT level=" + level);
             }
+        }
+
+        public Debugger getDebugger() {
+            return Debugger.this;
         }
 
         /**
@@ -1061,7 +1195,7 @@ public final class Debugger {
 
             try {
                 // Pass control to the debug client with current execution suspended
-                SuspendedEvent event = new SuspendedEvent(Debugger.this, haltedEventContext.getInstrumentedNode(), haltedPosition, haltedFrame, contextStack, recentWarnings);
+                SuspendedEvent event = new SuspendedEvent(getCurrentDebugContext(), haltedEventContext.getInstrumentedNode(), haltedPosition, haltedFrame, contextStack, recentWarnings);
                 AccessorDebug.engineAccess().dispatchEvent(engine, event, Accessor.EngineSupport.SUSPENDED_EVENT);
                 if (event.isKillPrepared()) {
                     trace("KILL");
@@ -1127,7 +1261,7 @@ public final class Debugger {
         return count[0] == 0 ? 0 : count[0] + 1;
     }
 
-    void executionStarted(int depth, Source source) {
+    public void executionStarted(int depth, Source source) {
         Source execSource = source;
         if (execSource == null) {
             execSource = lastSource;
@@ -1135,17 +1269,18 @@ public final class Debugger {
             lastSource = execSource;
         }
         // Push a new execution context onto stack
-        currentDebugContext = new DebugExecutionContext(execSource, currentDebugContext, depth);
-        breakpoints.notifySourceLoaded(source);
-        prepareContinue(depth);
-        currentDebugContext.trace("BEGIN EXECUTION");
+        DebugExecutionContext context = new DebugExecutionContext(execSource, getCurrentDebugContext(), depth);
+        setCurrentDebugContext(context);
+        prepareContinue(context, depth);
+        context.trace("BEGIN EXECUTION");
     }
 
-    private void executionEnded() {
-        currentDebugContext.trace("END EXECUTION");
-        currentDebugContext.dispose();
+    public void executionEnded() {
+        DebugExecutionContext context = getCurrentDebugContext();
+        context.trace("END EXECUTION");
+        context.dispose();
         // Pop the stack of execution contexts.
-        currentDebugContext = currentDebugContext.predecessor;
+        setCurrentDebugContext(context.predecessor);
     }
 
     /**
@@ -1158,10 +1293,11 @@ public final class Debugger {
      * @return
      * @throws IOException
      */
-    Object evalInContext(SuspendedEvent ev, String code, FrameInstance frameInstance) throws IOException {
+    Object evalInContext(DebugExecutionContext context, SuspendedEvent ev,
+                    String code, FrameInstance frameInstance) throws IOException {
         try {
             if (frameInstance == null) {
-                return AccessorDebug.langs().evalInContext(engine, ev, code, currentDebugContext.haltedEventContext.getInstrumentedNode(), currentDebugContext.haltedFrame);
+                return AccessorDebug.langs().evalInContext(engine, ev, code, context.haltedEventContext.getInstrumentedNode(), context.haltedFrame);
             } else {
                 return AccessorDebug.langs().evalInContext(engine, ev, code, frameInstance.getCallNode(), frameInstance.getFrame(FrameAccess.MATERIALIZE, true).materialize());
             }
@@ -1239,4 +1375,27 @@ public final class Debugger {
 
     // registers into Accessor.DEBUG
     static final AccessorDebug ACCESSOR = new AccessorDebug();
+
+    public SuspendedEvent createSuspendedEvent(Node haltedNode, MaterializedFrame haltedFrame) {
+        DebugExecutionContext context = getCurrentDebugContext();
+
+        final int contextStackDepth = (computeStackDepth() - context.contextStackBase) + 1;
+        final List<FrameInstance> frames = new ArrayList<>();
+        // TODO: get rid of code duplication
+        Truffle.getRuntime().iterateFrames(new FrameInstanceVisitor<FrameInstance>() {
+            int stackIndex = 1;
+
+            @Override
+            public FrameInstance visitFrame(FrameInstance frameInstance) {
+                if (stackIndex < contextStackDepth) {
+                    frames.add(frameInstance);
+                    stackIndex++;
+                    return null;
+                }
+                return frameInstance;
+            }
+        });
+
+        return new SuspendedEvent(context, haltedNode, HaltPosition.BEFORE, haltedFrame, Collections.unmodifiableList(frames), null);
+    }
 }
