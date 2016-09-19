@@ -110,7 +110,25 @@ public final class InstrumentationHandler {
             invalidateWrapperImpl((WrapperNode) instrumentableNode, node);
         } else {
             node = instrumentableNode;
-            globalHandler.insertWrapper(node, sourceSection);
+            if (node.getRootNode() != null) {
+                Set<Class<?>> providedTags = globalHandler.getProvidedTags(node.getRootNode());
+                if (isInstrumentableNode(node, sourceSection)) {
+                    // no locking required for these atomic reference arrays
+                    for (EventBinding<?> binding : globalHandler.executionBindings) {
+                        if (binding.isInstrumentedFull(providedTags, node.getRootNode(), node, sourceSection)) {
+                            if (TRACE) {
+                                traceFilterCheck("hit", providedTags, binding, node, sourceSection);
+                            }
+                            globalHandler.insertWrapper(node, sourceSection);
+                            break;
+                        } else {
+                            if (TRACE) {
+                                traceFilterCheck("miss", providedTags, binding, node, sourceSection);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
