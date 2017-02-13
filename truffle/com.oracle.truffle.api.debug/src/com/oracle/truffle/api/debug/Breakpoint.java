@@ -104,6 +104,15 @@ import com.oracle.truffle.api.vm.PolyglotEngine;
 public final class Breakpoint {
 
     /**
+     * A simple way to have conditional breakpoints, without language-level expressions.
+     *
+     * This is meant to implement complex breakpoints for the debugger.
+     */
+    public interface SimpleCondition {
+        boolean evaluate();
+    }
+
+    /**
      * A general model of the states occupied by a {@link Breakpoint} during its lifetime.
      *
      * @since 0.9
@@ -180,7 +189,9 @@ public final class Breakpoint {
     private volatile boolean resolved;
     private volatile int ignoreCount;
     private volatile boolean disposed;
+
     private volatile String condition;
+    private volatile SimpleCondition simpleCondition;
 
     /* We use long instead of int in the implementation to avoid not hitting again on overflows. */
     private final AtomicLong hitCount = new AtomicLong();
@@ -289,6 +300,11 @@ public final class Breakpoint {
      */
     public synchronized void setCondition(String expression) throws IOException {
         this.condition = expression;
+        this.simpleCondition = null;
+        invalidateConditionUnchangedAssumption();
+    }
+
+    private void invalidateConditionUnchangedAssumption() {
         Assumption assumption = conditionUnchanged;
         if (assumption != null) {
             this.conditionUnchanged = null;
@@ -296,6 +312,15 @@ public final class Breakpoint {
         }
     }
 
+    public synchronized void setCondition(SimpleCondition condition) {
+        this.simpleCondition = condition;
+        this.condition = null;
+        invalidateConditionUnchangedAssumption();
+    }
+
+    /*
+     * CHumer Deprecation Note: Deprecated because of wrong return type.
+     */
     /**
      * Returns the expression used to create the current breakpoint condition, null if no condition
      * set.
@@ -589,9 +614,14 @@ public final class Breakpoint {
         private final Object key;
 
         private int line = -1;
+        private int column = -1;
+        private int sectionLength = -1;
         private int ignoreCount;
         private boolean oneShot;
         private SourceSection sourceSection;
+
+        private Class<?> tag = StatementTag.class; // use StatementTag.class as default to be
+                                                   // backwards compatible
 
         private Builder(Object key) {
             Objects.requireNonNull(key);
@@ -630,6 +660,60 @@ public final class Breakpoint {
         }
 
         /**
+         * Specifies the breakpoint's starting column.
+         *
+         * Requires {@link #sectionLength(int) section length} to be set as well.
+         *
+         * Can only be invoked once per builder. Cannot be used together with
+         * {@link Breakpoint#newBuilder(SourceSection)}.
+         *
+         * @param column 1-based start column
+         * @throws IllegalStateException if {@code column < 1}
+         *
+         * @since unreleased
+         */
+        public Builder columnIs(@SuppressWarnings("hiding") int column) {
+            if (column <= 0) {
+                throw new IllegalArgumentException("Column argument must be > 0.");
+            }
+            if (this.column != -1) {
+                throw new IllegalStateException("ColumnIs can only be called once per breakpoint builder.");
+            }
+            if (sourceSection != null) {
+                throw new IllegalArgumentException("ColumnIs cannot be used with source section based breakpoint. ");
+            }
+            this.column = column;
+            return this;
+        }
+
+        /**
+         * Specifies the breakpoint's section length.
+         *
+         * Requires {@link #columnIs(int) starting column} to be set as well.
+         *
+         * Can only be invoked once per builder. Cannot be used together with
+         * {@link Breakpoint#newBuilder(SourceSection)}.
+         *
+         * @param length number of characters in the source section
+         * @throws IllegalStateException if {@code length < 1}
+         *
+         * @since unreleased
+         */
+        public Builder sectionLength(int length) {
+            if (length <= 0) {
+                throw new IllegalArgumentException("Length argument must be > 0.");
+            }
+            if (this.sectionLength != -1) {
+                throw new IllegalStateException("SectionLength can only be called once per breakpoint builder.");
+            }
+            if (sourceSection != null) {
+                throw new IllegalArgumentException("SectionLength cannot be used with source section based breakpoint. ");
+            }
+            this.sectionLength = length;
+            return this;
+        }
+
+        /**
          * Specifies the number of times a breakpoint is ignored until it hits (i.e. suspends
          * execution}.
          *
@@ -659,20 +743,31 @@ public final class Breakpoint {
             return this;
         }
 
+        public Builder tag(Class<?> filterTag) {
+            if (this.tag != StatementTag.class) {
+                throw new IllegalStateException("Tag had already been set to " + this.tag.getSimpleName() + " before.");
+            }
+            this.tag = filterTag;
+            return this;
+        }
+
         /**
          * @return a new breakpoint instance
          *
          * @since 0.17
          */
         public Breakpoint build() {
-            SourceSectionFilter f = buildFilter();
+            if (column != -1 ^ sectionLength != -1) {
+                throw new IllegalArgumentException("Column and sectionLength need to be set both to indicate a source section");
+            }
+            SourceSectionFilter f = buildFilter(tag);
             BreakpointLocation location = new BreakpointLocation(key, line);
             Breakpoint breakpoint = new Breakpoint(location, f, oneShot);
             breakpoint.setIgnoreCount(ignoreCount);
             return breakpoint;
         }
 
-        private SourceSectionFilter buildFilter() {
+        private SourceSectionFilter buildFilter(Class<?> tag) {
             SourceSectionFilter.Builder f = SourceSectionFilter.newBuilder();
             if (key instanceof URI) {
                 final URI sourceUri = (URI) key;
@@ -697,10 +792,14 @@ public final class Breakpoint {
             if (line != -1) {
                 f.lineStartsIn(IndexRange.byLength(line, 1));
             }
+            if (column != -1) {
+                assert sectionLength != -1;
+                f.columnAndLength(column, sectionLength);
+            }
             if (sourceSection != null) {
                 f.sourceSectionEquals(sourceSection);
             }
-            f.tagIs(StatementTag.class);
+            f.tagIs(tag);
             return f.build();
         }
     }
@@ -721,13 +820,18 @@ public final class Breakpoint {
         private final Breakpoint breakpoint;
         private final BranchProfile breakBranch = BranchProfile.create();
 
-        @Child private ConditionalBreakNode breakCondition;
+        @Child private AbstractConditionalBreakNode breakCondition;
 
         BreakpointNode(Breakpoint breakpoint, EventContext context) {
             super(context);
             this.breakpoint = breakpoint;
             if (breakpoint.condition != null) {
+                assert breakpoint.simpleCondition == null : "We don't support both conditions being set at the same time.";
                 this.breakCondition = new ConditionalBreakNode(context, breakpoint);
+            }
+            if (breakpoint.simpleCondition != null) {
+                assert breakpoint.condition == null : "We don't support both conditions being set at the same time.";
+                this.breakCondition = new SimpleConditionalBreakNode(context, breakpoint);
             }
         }
 
@@ -799,8 +903,12 @@ public final class Breakpoint {
 
     }
 
-    private static class ConditionalBreakNode extends Node {
+    private abstract static class AbstractConditionalBreakNode extends Node {
+        protected final EventContext context;
+        protected final Breakpoint breakpoint;
+        @CompilationFinal protected Assumption conditionUnchanged;
 
+<<<<<<< HEAD
         private static final Object[] EMPTY_ARRAY = new Object[0];
 
         private final EventContext context;
@@ -809,12 +917,49 @@ public final class Breakpoint {
         @CompilationFinal private Assumption conditionUnchanged;
 
         ConditionalBreakNode(EventContext context, Breakpoint breakpoint) {
+=======
+        AbstractConditionalBreakNode(EventContext context, Breakpoint breakpoint) {
+>>>>>>> bf8d6a17e731d970b0623acce6e1ae11481eaa3c
             this.context = context;
             this.breakpoint = breakpoint;
             this.conditionUnchanged = breakpoint.getConditionUnchanged();
         }
 
+<<<<<<< HEAD
         boolean shouldBreak() {
+=======
+        abstract boolean shouldBreak(Frame frame);
+    }
+
+    private static class SimpleConditionalBreakNode extends AbstractConditionalBreakNode {
+        @CompilationFinal private SimpleCondition condition;
+
+        SimpleConditionalBreakNode(EventContext context, Breakpoint breakpoint) {
+            super(context, breakpoint);
+        }
+
+        @Override
+        boolean shouldBreak(Frame frame) {
+            if (!conditionUnchanged.isValid()) {
+                CompilerDirectives.transferToInterpreterAndInvalidate();
+                condition = breakpoint.simpleCondition;
+            }
+
+            return condition.evaluate();
+        }
+    }
+
+    private static class ConditionalBreakNode extends AbstractConditionalBreakNode {
+
+        @Child private DirectCallNode conditionCallNode;
+
+        ConditionalBreakNode(EventContext context, Breakpoint breakpoint) {
+            super(context, breakpoint);
+        }
+
+        @Override
+        boolean shouldBreak(Frame frame) {
+>>>>>>> bf8d6a17e731d970b0623acce6e1ae11481eaa3c
             if (conditionCallNode == null || !conditionUnchanged.isValid()) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 initializeConditional();

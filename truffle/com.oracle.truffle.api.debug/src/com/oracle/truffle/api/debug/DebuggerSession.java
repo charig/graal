@@ -55,6 +55,7 @@ import com.oracle.truffle.api.instrumentation.ExecutionEventNodeFactory;
 import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
 import com.oracle.truffle.api.instrumentation.SourceSectionFilter.Builder;
 import com.oracle.truffle.api.instrumentation.StandardTags.CallTag;
+import com.oracle.truffle.api.instrumentation.StandardTags.RootTag;
 import com.oracle.truffle.api.instrumentation.StandardTags.StatementTag;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.source.Source;
@@ -152,8 +153,10 @@ public final class DebuggerSession implements Closeable {
 
     private static final AtomicInteger SESSIONS = new AtomicInteger(0);
 
-    enum SteppingLocation {
+    public enum SteppingLocation {
         AFTER_CALL,
+        BEFORE_ROOT_NODE,
+        AFTER_ROOT_NODE,
         BEFORE_STATEMENT
     }
 
@@ -164,12 +167,21 @@ public final class DebuggerSession implements Closeable {
 
     private EventBinding<? extends ExecutionEventNodeFactory> callBinding;
     private EventBinding<? extends ExecutionEventNodeFactory> statementBinding;
+    private EventBinding<? extends ExecutionEventNodeFactory> beforeRootNodeBinding;
+    private EventBinding<? extends ExecutionEventNodeFactory> afterRootNodeBinding;
 
     private final ConcurrentHashMap<Thread, SuspendedEvent> currentSuspendedEventMap = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Thread, SteppingStrategy> strategyMap = new ConcurrentHashMap<>();
     private volatile boolean suspendNext;
     private boolean suspendAll;
     private final StableBoolean stepping = new StableBoolean(false);
+
+    /**
+     * Denotes the current thread on which threading is activated.
+     *
+     * Currently only used for the stepping to next root node.
+     */
+    private volatile Thread steppingThread;
 
     /*
      * Legacy mode for backwards compatibility. Legacy mode means that recursive events will be
@@ -320,6 +332,27 @@ public final class DebuggerSession implements Closeable {
         setSteppingStrategy(t, SteppingStrategy.createContinue(), true);
     }
 
+    /**
+     * Run to the next root node. Suspend execution before executing the node.
+     */
+    public void prepareSteppingUntilNextRootNode() {
+        Thread current = Thread.currentThread();
+        steppingThread = current;
+        // TODO: not sure about update stepping yet true? false?
+        setSteppingStrategy(current, SteppingStrategy.createStepUntilNextRootNode(), false);
+    }
+
+    /**
+     * Run to the next root node, remember it, and execute all subexpressions. Once it returns and
+     * arrives on the return edge, suspend execution.
+     */
+    public void prepareSteppingAfterNextRootNode() {
+        Thread current = Thread.currentThread();
+        steppingThread = current;
+        // TODO: not sure about update stepping yet true? false?
+        setSteppingStrategy(current, SteppingStrategy.createStepAfterNextRootNode(), false);
+    }
+
     private synchronized void setSteppingStrategy(Thread thread, SteppingStrategy strategy, boolean updateStepping) {
         if (closed) {
             return;
@@ -388,6 +421,17 @@ public final class DebuggerSession implements Closeable {
                     return new StatementSteppingNode(context);
                 }
             });
+            builder = SourceSectionFilter.newBuilder().tagIs(RootTag.class);
+            this.beforeRootNodeBinding = debugger.getInstrumenter().attachFactory(builder.build(), new ExecutionEventNodeFactory() {
+                public ExecutionEventNode create(EventContext context) {
+                    return new ThreadSpecificRootNodeSteppingNode(context, SteppingLocation.BEFORE_ROOT_NODE);
+                }
+            });
+            this.afterRootNodeBinding = debugger.getInstrumenter().attachFactory(builder.build(), new ExecutionEventNodeFactory() {
+                public ExecutionEventNode create(EventContext context) {
+                    return new ThreadSpecificRootNodeSteppingNode(context, SteppingLocation.AFTER_ROOT_NODE);
+                }
+            });
         }
     }
 
@@ -395,8 +439,12 @@ public final class DebuggerSession implements Closeable {
         if (statementBinding != null) {
             callBinding.dispose();
             statementBinding.dispose();
+            beforeRootNodeBinding.dispose();
+            afterRootNodeBinding.dispose();
             callBinding = null;
             statementBinding = null;
+            beforeRootNodeBinding = null;
+            afterRootNodeBinding = null;
             if (Debugger.TRACE) {
                 trace("disabled stepping");
             }
@@ -605,13 +653,22 @@ public final class DebuggerSession implements Closeable {
         }
     }
 
+    public void doSuspend(MaterializedFrame frame, SteppingLocation steppingLocation) {
+        doSuspend(null, steppingLocation, frame, null, null, null);
+    }
+
     private void doSuspend(DebuggerNode source, MaterializedFrame frame, Object returnValue, List<Breakpoint> breaks, Map<Breakpoint, Throwable> conditionFailures) {
+        doSuspend(source.getContext(), source.getSteppingLocation(), frame, returnValue, breaks, conditionFailures);
+    }
+
+    private void doSuspend(EventContext context, SteppingLocation steppingLocation, MaterializedFrame frame, Object returnValue, List<Breakpoint> breaks,
+                    Map<Breakpoint, Throwable> conditionFailures) {
         CompilerAsserts.neverPartOfCompilation();
         Thread currentThread = Thread.currentThread();
 
         SuspendedEvent suspendedEvent;
         try {
-            suspendedEvent = new SuspendedEvent(this, currentThread, source.getContext(), frame, source.getSteppingLocation(), returnValue, breaks, conditionFailures);
+            suspendedEvent = new SuspendedEvent(this, currentThread, context, frame, steppingLocation, returnValue, breaks, conditionFailures);
             currentSuspendedEventMap.put(currentThread, suspendedEvent);
             try {
                 callback.onSuspend(suspendedEvent);
@@ -632,6 +689,10 @@ public final class DebuggerSession implements Closeable {
             return;
         }
 
+        prepareStepping(context, steppingLocation, currentThread, suspendedEvent);
+    }
+
+    private void prepareStepping(EventContext context, SteppingLocation steppingLocation, Thread currentThread, SuspendedEvent suspendedEvent) throws KillException {
         SteppingStrategy strategy = suspendedEvent.getNextStrategy();
         if (!legacy && !strategy.isKill()) {
             // suspend(...) has been called during SuspendedEvent notification. this is only
@@ -644,7 +705,7 @@ public final class DebuggerSession implements Closeable {
         strategy.initialize();
 
         if (Debugger.TRACE) {
-            trace("end suspend with strategy %s at %s location %s", strategy, source.getContext(), source.getSteppingLocation());
+            trace("end suspend with strategy %s at %s location %s", strategy, context, steppingLocation);
         }
 
         setSteppingStrategy(currentThread, strategy, true);
@@ -679,11 +740,25 @@ public final class DebuggerSession implements Closeable {
                 nodes.add(node);
             }
         } else {
-            assert source.getSteppingLocation() == SteppingLocation.AFTER_CALL;
-            // there is only one binding that can lead to a after event
-            if (stepping.get()) {
-                assert source.getContext().lookupExecutionEventNode(callBinding) == source;
-                nodes.add(source);
+            if (source.getSteppingLocation() == SteppingLocation.AFTER_CALL) {
+                // there is only one binding that can lead to a after event
+                if (stepping.get()) {
+                    assert source.getContext().lookupExecutionEventNode(callBinding) == source;
+                    nodes.add(source);
+                }
+            } else if (source.getSteppingLocation() == SteppingLocation.BEFORE_ROOT_NODE) {
+                // Stefan: I assume there is also only one binding for a before rootnode event
+                if (steppingThread != null) {
+                    assert source.getContext().lookupExecutionEventNode(beforeRootNodeBinding) == source;
+                    nodes.add(source);
+                }
+            } else {
+                assert source.getSteppingLocation() == SteppingLocation.AFTER_ROOT_NODE;
+                // Stefan: I assume there is also only one binding for a after rootnode event
+                if (steppingThread != null) {
+                    assert source.getContext().lookupExecutionEventNode(afterRootNodeBinding) == source;
+                    nodes.add(source);
+                }
             }
         }
         return nodes;
@@ -755,6 +830,53 @@ public final class DebuggerSession implements Closeable {
         @Override
         SteppingLocation getSteppingLocation() {
             return SteppingLocation.BEFORE_STATEMENT;
+        }
+    }
+
+    private final class ThreadSpecificRootNodeSteppingNode extends DebuggerNode {
+
+        private final SteppingLocation steppingLocation;
+
+        ThreadSpecificRootNodeSteppingNode(EventContext context, SteppingLocation steppingLocation) {
+            super(context);
+            assert steppingLocation == SteppingLocation.BEFORE_ROOT_NODE ||
+                            steppingLocation == SteppingLocation.AFTER_ROOT_NODE : "Only root node related locations are supported.";
+            this.steppingLocation = steppingLocation;
+        }
+
+        @Override
+        EventBinding<?> getBinding() {
+            if (steppingLocation == SteppingLocation.BEFORE_ROOT_NODE) {
+                return beforeRootNodeBinding;
+            } else {
+                return afterRootNodeBinding;
+            }
+        }
+
+        @Override
+        protected void onEnter(VirtualFrame frame) {
+            if (steppingLocation == SteppingLocation.BEFORE_ROOT_NODE && steppingThread == Thread.currentThread()) {
+                notifyCallback(this, frame.materialize(), null, null);
+            }
+        }
+
+        @Override
+        protected void onReturnValue(VirtualFrame frame, Object result) {
+            if (steppingLocation == SteppingLocation.AFTER_ROOT_NODE && steppingThread == Thread.currentThread()) {
+                notifyCallback(this, frame.materialize(), result, null);
+            }
+        }
+
+        @Override
+        protected void onReturnExceptional(VirtualFrame frame, Throwable exception) {
+            if (steppingLocation == SteppingLocation.AFTER_ROOT_NODE && steppingThread == Thread.currentThread()) {
+                notifyCallback(this, frame.materialize(), exception, null);
+            }
+        }
+
+        @Override
+        SteppingLocation getSteppingLocation() {
+            return steppingLocation;
         }
     }
 
