@@ -870,7 +870,7 @@ public final class Breakpoint {
             // using stack access methods.
             if (breakCondition != null) {
                 try {
-                    return breakCondition.shouldBreak();
+                    return breakCondition.shouldBreak(frame);
                 } catch (Throwable e) {
                     CompilerDirectives.transferToInterpreter();
                     throw new BreakpointConditionFailure(breakpoint, e);
@@ -906,28 +906,17 @@ public final class Breakpoint {
     private abstract static class AbstractConditionalBreakNode extends Node {
         protected final EventContext context;
         protected final Breakpoint breakpoint;
+        protected static final Object[] EMPTY_ARRAY = new Object[0];
+
+        //@Child private DirectCallNode conditionCallNode;
+        
         @CompilationFinal protected Assumption conditionUnchanged;
 
-<<<<<<< HEAD
-        private static final Object[] EMPTY_ARRAY = new Object[0];
-
-        private final EventContext context;
-        private final Breakpoint breakpoint;
-        @Child private DirectCallNode conditionCallNode;
-        @CompilationFinal private Assumption conditionUnchanged;
-
-        ConditionalBreakNode(EventContext context, Breakpoint breakpoint) {
-=======
-        AbstractConditionalBreakNode(EventContext context, Breakpoint breakpoint) {
->>>>>>> bf8d6a17e731d970b0623acce6e1ae11481eaa3c
+        AbstractConditionalBreakNode(EventContext context, Breakpoint breakpoint){
             this.context = context;
             this.breakpoint = breakpoint;
             this.conditionUnchanged = breakpoint.getConditionUnchanged();
         }
-
-<<<<<<< HEAD
-        boolean shouldBreak() {
-=======
         abstract boolean shouldBreak(Frame frame);
     }
 
@@ -959,7 +948,6 @@ public final class Breakpoint {
 
         @Override
         boolean shouldBreak(Frame frame) {
->>>>>>> bf8d6a17e731d970b0623acce6e1ae11481eaa3c
             if (conditionCallNode == null || !conditionUnchanged.isValid()) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 initializeConditional();

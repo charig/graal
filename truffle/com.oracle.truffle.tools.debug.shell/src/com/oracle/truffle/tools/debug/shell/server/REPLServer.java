@@ -211,8 +211,8 @@ public final class REPLServer {
     }
 
     void run() {
-        Source source = Source.fromNamedText("", "START");
-        source = source.withMimeType(getLanguages().iterator().next().getMimeTypes().iterator().next());
+        Source source = Source.newBuilder("").name("START").
+            mimeType(getLanguages().iterator().next().getMimeTypes().iterator().next()).build();
         engine.eval(source);
     }
 
