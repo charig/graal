@@ -402,7 +402,7 @@ public class FlatNodeGenFactory {
 
         int index = 1;
         for (SpecializationData specialization : filteredSpecializations) {
-            builder.startStatement().string("s = ").startNewArray(objectArray, CodeTreeBuilder.singleString("3")).end().end();
+            builder.startStatement().string("s = ").startNewArray(objectArray, CodeTreeBuilder.singleString("4")).end().end();
             builder.startStatement().string("s[0] = ").doubleQuote(specialization.getMethodName()).end();
 
             builder.startIf().tree(state.createContains(frameState, new Object[]{specialization})).end().startBlock();
@@ -411,10 +411,12 @@ public class FlatNodeGenFactory {
 
             if (!specialization.getCaches().isEmpty()) {
                 builder.declaration(listType, "cached", "new ArrayList<>()");
+                builder.declaration(listType, "nodes", "new ArrayList<>()");
 
                 boolean useSpecializationClass = useSpecializationClass(specialization);
 
                 String name = createSpecializationLocalName(specialization);
+                String nodeName = name;
 
                 if (useSpecializationClass) {
                     builder.declaration(createSpecializationTypeName(specialization), name, CodeTreeBuilder.singleString(createSpecializationFieldName(specialization)));
@@ -427,7 +429,13 @@ public class FlatNodeGenFactory {
                     builder.string(name, " != null");
                     builder.end();
                     builder.startBlock();
+                } else {
+                    nodeName = "this";
                 }
+
+                builder.startStatement().startCall("nodes", "add");
+                builder.tree(CodeTreeBuilder.singleString(nodeName));
+                builder.end().end();
 
                 builder.startStatement().startCall("cached", "add");
                 builder.startStaticCall(context.getType(Arrays.class), "asList");
@@ -439,6 +447,8 @@ public class FlatNodeGenFactory {
                 builder.end();
                 builder.end().end();
 
+
+
                 if (useSpecializationClass) {
                     if (specialization.getMaximumNumberOfInstances() > 1) {
                         builder.startStatement().string(name, " = ", name, ".next_").end();
@@ -448,6 +458,7 @@ public class FlatNodeGenFactory {
                 }
 
                 builder.statement("s[2] = cached");
+                builder.statement("s[3] = nodes");
             }
             builder.end();
             if (mayBeExcluded(specialization)) {
@@ -2626,7 +2637,7 @@ public class FlatNodeGenFactory {
         String specializationLocalName = createSpecializationLocalName(specialization);
         boolean useSpecializationClass = useSpecializationClass(specialization);
         if (method == null) {
-            method = new CodeExecutableElement(context.getType(void.class), "remove" + specialization.getId() + "_");
+            method = new CodeExecutableElement(ElementUtils.modifiers(Modifier.PUBLIC), context.getType(void.class), "remove" + specialization.getId() + "_");
             if (useSpecializationClass) {
                 method.addParameter(new CodeVariableElement(context.getType(Object.class), specializationLocalName));
             }

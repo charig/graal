@@ -122,11 +122,13 @@ public final class Introspection {
         private final String methodName;
         private final byte state; /* 0b000000<excluded><active> */
         private final List<List<Object>> cachedData;
+        private final List<Object> specializations;
 
-        SpecializationInfo(String methodName, byte state, List<List<Object>> cachedData) {
+        SpecializationInfo(String methodName, byte state, List<List<Object>> cachedData, List<Object> specializations) {
             this.methodName = methodName;
             this.state = state;
             this.cachedData = cachedData;
+            this.specializations = specializations;
         }
 
         /**
@@ -181,6 +183,10 @@ public final class Introspection {
                 throw new IllegalArgumentException("Invalid specialization index");
             }
             return cachedData.get(instanceIndex);
+        }
+
+        public List<Object> getSpecializations() {
+            return specializations;
         }
 
     }
@@ -268,6 +274,7 @@ public final class Introspection {
         String id = (String) fieldData[0];
         byte state = (byte) fieldData[1];
         List<List<Object>> cachedData = (List<List<Object>>) fieldData[2];
+        List<Object> specializations = (List<Object>) fieldData[3];
         if (cachedData == null || cachedData.isEmpty()) {
             if ((state & 0b01) != 0) {
                 cachedData = EMPTY_CACHED;
@@ -279,7 +286,7 @@ public final class Introspection {
                 cachedData.set(i, Collections.unmodifiableList(cachedData.get(i)));
             }
         }
-        return new SpecializationInfo(id, state, cachedData);
+        return new SpecializationInfo(id, state, cachedData, specializations);
     }
 
 }
