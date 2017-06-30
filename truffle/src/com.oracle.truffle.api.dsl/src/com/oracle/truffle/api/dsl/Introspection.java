@@ -124,7 +124,7 @@ public final class Introspection {
         private final List<List<Object>> cachedData;
         private final List<Object> specializations;
 
-        SpecializationInfo(String methodName, byte state, List<List<Object>> cachedData, List<Object> specializations) {
+        public SpecializationInfo(String methodName, byte state, List<List<Object>> cachedData, List<Object> specializations) {
             this.methodName = methodName;
             this.state = state;
             this.cachedData = cachedData;
