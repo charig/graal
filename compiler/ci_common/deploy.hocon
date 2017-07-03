@@ -1,0 +1,3 @@
+builds += [
+  ${deploy-binaries} ${compilerCommon} ${linux-amd64} ${linux-deploy} {name: "postmerge-compiler-deploy-binaries-linux-amd64"}
+]
