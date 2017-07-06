@@ -64,7 +64,7 @@ import com.oracle.truffle.api.source.SourceSection;
  * Central coordinator class for the Truffle instrumentation framework. Allocated once per
  * {@linkplain com.oracle.truffle.api.vm.PolyglotEngine engine}.
  */
-final class InstrumentationHandler {
+public final class InstrumentationHandler {
 
     /* Enable trace output to stdout. */
     private static final boolean TRACE = Boolean.getBoolean("truffle.instrumentation.trace");
@@ -438,12 +438,13 @@ final class InstrumentationHandler {
     }
 
     @SuppressWarnings("unchecked")
-    private void insertWrapper(Node instrumentableNode, SourceSection sourceSection) {
+    public void insertWrapper(Node instrumentableNode, SourceSection sourceSection) {
         final Node node = instrumentableNode;
         final Node parent = node.getParent();
         if (parent instanceof WrapperNode) {
             // already wrapped, need to invalidate the wrapper something changed
             invalidateWrapperImpl((WrapperNode) parent, node);
+            assert node.getParent() != node;
             return;
         }
         ProbeNode probe = new ProbeNode(InstrumentationHandler.this, sourceSection);
@@ -495,6 +496,7 @@ final class InstrumentationHandler {
         }
 
         node.replace(wrapperNode, "Insert instrumentation wrapper node.");
+        assert node.getParent() != node;
     }
 
     private <T extends ExecutionEventNodeFactory> EventBinding<T> attachFactory(AbstractInstrumenter instrumenter, SourceSectionFilter filter, T factory) {

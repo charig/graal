@@ -44,6 +44,7 @@ import com.oracle.truffle.api.nodes.LanguageInfo;
 import com.oracle.truffle.api.vm.LanguageCache.LoadedLanguage;
 import com.oracle.truffle.api.vm.PolyglotEngine.Access;
 import com.oracle.truffle.api.vm.PolyglotEngine.Language;
+import com.oracle.truffle.api.instrumentation.InstrumentationHandler;
 
 /**
  * A runtime environment for one or more {@link PolyglotEngine} instances. By default a constructed
@@ -124,6 +125,10 @@ public final class PolyglotRuntime {
 
     PolyglotEngine currentVM() {
         return engineProfile.get();
+    }
+    
+    public InstrumentationHandler getInstrumentationHandler() {
+      return (InstrumentationHandler) this.instrumentationHandler;
     }
 
     List<LanguageShared> getLanguages() {

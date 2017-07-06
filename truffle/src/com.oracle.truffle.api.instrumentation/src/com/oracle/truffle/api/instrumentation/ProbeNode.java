@@ -269,6 +269,24 @@ public final class ProbeNode extends Node {
     public NodeCost getCost() {
         return NodeCost.NONE;
     }
+    
+    public ExecutionEventNode findEventNode(final ExecutionEventNodeFactory factory) {
+      if (version != null && version.isValid() && chain != null) {
+          return findEventNodeInChain(factory);
+      }
+      return null;
+    }
+  
+    private ExecutionEventNode findEventNodeInChain(ExecutionEventNodeFactory factory) {
+        EventChainNode currentChain = this.chain;
+        while (currentChain != null) {
+            if (currentChain.binding.getElement() == factory) {
+                return ((EventProviderChainNode) currentChain).eventNode;
+            }
+            currentChain = currentChain.next;
+        }
+        return null;
+    }
 
     abstract static class EventChainNode extends Node {
 
@@ -384,7 +402,6 @@ public final class ProbeNode extends Node {
         }
 
         protected abstract void innerOnReturnExceptional(EventContext context, VirtualFrame frame, Throwable exception);
-
     }
 
     private static class EventFilterChainNode extends ProbeNode.EventChainNode {
