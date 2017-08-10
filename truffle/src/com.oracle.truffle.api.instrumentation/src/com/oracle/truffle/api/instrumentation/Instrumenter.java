@@ -164,5 +164,6 @@ public abstract class Instrumenter {
      * @since 0.12
      */
     public abstract Set<Class<?>> queryTags(Node node);
-
+    
+    public abstract boolean isTaggedWith(Node node, Class<?> tag);
 }
