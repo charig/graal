@@ -12,10 +12,25 @@ gateLite : ${truffleCommon} {
   ]
 }
 
+benchCommon: ${linux-amd64} ${labsjdk8} {
+  environment: {
+    BENCH_RESULTS_FILE_PATH: "bench-results.json"
+  },
+  targets: [weekly],
+  timelimit: "1:00:00",
+  setup : [
+    ["cd", "./compiler"],
+    ["mx", "build" ]
+  ],
+  teardown : [
+    ["bench-uploader.py", "--url", "${BENCH_SERVER_URL}", "${BENCH_RESULTS_FILE_PATH}"]
+  ]
+}
+
 builds += [
-  ${linux-amd64} ${java8} ${truffleCommon} ${eclipse} ${jdt} {run : [["mx", "--strict-compliance", "gate", "--strict-mode"]], targets : [gate], name: "gate-truffle-8"},
-  ${linux-amd64} ${java9} ${truffleCommon} ${eclipse} {run : [["mx", "--strict-compliance", "gate", "--strict-mode"]], targets : [gate], name: "gate-truffle-9"},
-  ${linux-amd64} ${java8} ${truffleCommon} {
+  ${linux-amd64} ${openjdk8} ${truffleCommon} ${eclipse} ${jdt} {run : [["mx", "--strict-compliance", "gate", "--strict-mode"]], targets : [gate], name: "gate-truffle-8"},
+  ${linux-amd64} ${labsjdk9} ${truffleCommon} ${eclipse} {run : [["mx", "--strict-compliance", "gate", "--strict-mode"]], targets : [gate], name: "gate-truffle-9"},
+  ${linux-amd64} ${openjdk8} ${truffleCommon} {
     run : [
         ["mx", "build"],
         ["mx", "javadoc"],
@@ -23,28 +38,24 @@ builds += [
     targets : [gate],
     name: "gate-truffle-javadoc"
   },
-  ${linux-amd64} ${java8} ${truffleCommon} {run : [["sh", ".travis.sigtest.sh"]], targets : [gate], name: "gate-truffle-sigtest"},
   ${linux-amd64} ${linux-deploy} ${maven-deploy-dry-run} ${truffleCommon} {name: "gate-truffle-maven-dry-run"}
-  ${linux-amd64} ${linux-deploy} ${deploy-binaries} ${truffleCommon} {name : "postmerge-truffle-deploy-binaries-linux-amd64"}
-  ${darwin-amd64} ${darwin-deploy} ${deploy-binaries} ${truffleCommon} {name : "postmerge-truffle-deploy-binaries-darwin-amd64"}
-  ${solaris-sparcv9} ${solaris-deploy} ${deploy-binaries} ${truffleCommon} {name : "postmerge-truffle-deploy-binaries-solaris-sparcv9"}
-  ${solaris-sparcv9} ${java8} ${gateLite} {
-    targets : [ gate ],
+  ${solaris-sparcv9} ${labsjdk8} ${gateLite} {
+    targets : [ weekly ],
     name: "gate-truffle-solaris-lite-8"
   }
-  ${solaris-sparcv9} ${java9} ${gateLite} {
-    targets : [ gate ],
+  ${solaris-sparcv9} ${labsjdk9} ${gateLite} {
+    targets : [ weekly ],
     name: "gate-truffle-solaris-lite-9"
   }
-  ${darwin-amd64} ${java8} ${gateLite} {
-    targets : [ gate ],
+  ${darwin-amd64} ${labsjdk8} ${gateLite} {
+    targets : [ weekly ],
     name: "gate-truffle-mac-lite-8"
   }
-  ${darwin-amd64} ${java9} ${gateLite} {
-    targets : [ gate ],
+  ${darwin-amd64} ${labsjdk9} ${gateLite} {
+    targets : [ weekly ],
     name: "gate-truffle-mac-lite-9"
   }
-  ${linux-amd64} ${java8} ${truffleCommon} {
+  ${linux-amd64} ${openjdk8} ${truffleCommon} {
     run : [
         ["mx", "build"],
         ["mx", "javadoc"],
@@ -63,4 +74,12 @@ builds += [
     targets : [post-merge],
     name: "truffle-publish-javadoc"
   }
+  # BENCHMARKS
+  ${benchCommon} {
+    run: [
+      ["mx", "--kill-with-sigquit", "benchmark", "--results-file", "${BENCH_RESULTS_FILE_PATH}", "truffle:*", "--", "--", "com.oracle.truffle.api.benchmark*"]
+    ],
+    name: "bench-truffle-jmh"
+  }
+
 ]

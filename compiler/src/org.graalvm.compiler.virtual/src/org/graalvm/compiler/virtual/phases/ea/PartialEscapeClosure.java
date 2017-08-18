@@ -26,15 +26,15 @@ import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Iterator;
 import java.util.List;
-import java.util.function.IntFunction;
+import java.util.function.IntUnaryOperator;
 
 import org.graalvm.compiler.core.common.GraalOptions;
 import org.graalvm.compiler.core.common.cfg.Loop;
 import org.graalvm.compiler.core.common.spi.ConstantFieldProvider;
 import org.graalvm.compiler.core.common.type.Stamp;
 import org.graalvm.compiler.core.common.type.StampFactory;
-import org.graalvm.compiler.debug.Debug;
-import org.graalvm.compiler.debug.DebugCounter;
+import org.graalvm.compiler.debug.CounterKey;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.NodeBitMap;
 import org.graalvm.compiler.graph.Position;
@@ -78,14 +78,14 @@ import jdk.vm.ci.meta.MetaAccessProvider;
 
 public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockState<BlockT>> extends EffectsClosure<BlockT> {
 
-    public static final DebugCounter COUNTER_MATERIALIZATIONS = Debug.counter("Materializations");
-    public static final DebugCounter COUNTER_MATERIALIZATIONS_PHI = Debug.counter("MaterializationsPhi");
-    public static final DebugCounter COUNTER_MATERIALIZATIONS_MERGE = Debug.counter("MaterializationsMerge");
-    public static final DebugCounter COUNTER_MATERIALIZATIONS_UNHANDLED = Debug.counter("MaterializationsUnhandled");
-    public static final DebugCounter COUNTER_MATERIALIZATIONS_LOOP_REITERATION = Debug.counter("MaterializationsLoopReiteration");
-    public static final DebugCounter COUNTER_MATERIALIZATIONS_LOOP_END = Debug.counter("MaterializationsLoopEnd");
-    public static final DebugCounter COUNTER_ALLOCATION_REMOVED = Debug.counter("AllocationsRemoved");
-    public static final DebugCounter COUNTER_MEMORYCHECKPOINT = Debug.counter("MemoryCheckpoint");
+    public static final CounterKey COUNTER_MATERIALIZATIONS = DebugContext.counter("Materializations");
+    public static final CounterKey COUNTER_MATERIALIZATIONS_PHI = DebugContext.counter("MaterializationsPhi");
+    public static final CounterKey COUNTER_MATERIALIZATIONS_MERGE = DebugContext.counter("MaterializationsMerge");
+    public static final CounterKey COUNTER_MATERIALIZATIONS_UNHANDLED = DebugContext.counter("MaterializationsUnhandled");
+    public static final CounterKey COUNTER_MATERIALIZATIONS_LOOP_REITERATION = DebugContext.counter("MaterializationsLoopReiteration");
+    public static final CounterKey COUNTER_MATERIALIZATIONS_LOOP_END = DebugContext.counter("MaterializationsLoopEnd");
+    public static final CounterKey COUNTER_ALLOCATION_REMOVED = DebugContext.counter("AllocationsRemoved");
+    public static final CounterKey COUNTER_MEMORYCHECKPOINT = DebugContext.counter("MemoryCheckpoint");
 
     /**
      * Nodes with inputs that were modified during analysis are marked in this bitset - this way
@@ -102,6 +102,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
      * The indexes into this array correspond to {@link VirtualObjectNode#getObjectId()}.
      */
     public final ArrayList<VirtualObjectNode> virtualObjects = new ArrayList<>();
+    public final DebugContext debug;
 
     @Override
     public boolean needsApplyEffects() {
@@ -171,7 +172,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
 
         @Override
         protected PartialEscapeBlockState.Final getInitialState() {
-            return new PartialEscapeBlockState.Final(tool.getOptions());
+            return new PartialEscapeBlockState.Final(tool.getOptions(), tool.getDebug());
         }
 
         @Override
@@ -189,7 +190,8 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
         super(schedule, schedule.getCFG());
         StructuredGraph graph = schedule.getCFG().graph;
         this.hasVirtualInputs = graph.createNodeBitMap();
-        this.tool = new VirtualizerToolImpl(metaAccess, constantReflection, constantFieldProvider, this, graph.getAssumptions(), graph.getOptions(), loweringProvider);
+        this.debug = graph.getDebug();
+        this.tool = new VirtualizerToolImpl(metaAccess, constantReflection, constantFieldProvider, this, graph.getAssumptions(), graph.getOptions(), debug, loweringProvider);
     }
 
     /**
@@ -212,14 +214,14 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
 
     private boolean processNodeInternal(Node node, BlockT state, GraphEffectList effects, FixedWithNextNode lastFixedNode) {
         FixedNode nextFixedNode = lastFixedNode == null ? null : lastFixedNode.next();
-        VirtualUtil.trace(node.getOptions(), "%s", node);
+        VirtualUtil.trace(node.getOptions(), debug, "%s", node);
 
         if (requiresProcessing(node)) {
             if (processVirtualizable((ValueNode) node, nextFixedNode, state, effects) == false) {
                 return false;
             }
             if (tool.isDeleted()) {
-                VirtualUtil.trace(node.getOptions(), "deleted virtualizable allocation %s", node);
+                VirtualUtil.trace(node.getOptions(), debug, "deleted virtualizable allocation %s", node);
                 return true;
             }
         }
@@ -229,7 +231,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                     return false;
                 }
                 if (tool.isDeleted()) {
-                    VirtualUtil.trace(node.getOptions(), "deleted virtualizable node %s", node);
+                    VirtualUtil.trace(node.getOptions(), debug, "deleted virtualizable node %s", node);
                     return true;
                 }
             }
@@ -261,10 +263,10 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
     /**
      * This tries to canonicalize the node based on improved (replaced) inputs.
      */
+    @SuppressWarnings("unchecked")
     private boolean processNodeWithScalarReplacedInputs(ValueNode node, FixedNode insertBefore, BlockT state, GraphEffectList effects) {
         ValueNode canonicalizedValue = node;
         if (node instanceof Canonicalizable.Unary<?>) {
-            @SuppressWarnings("unchecked")
             Canonicalizable.Unary<ValueNode> canonicalizable = (Canonicalizable.Unary<ValueNode>) node;
             ObjectState valueObj = getObjectState(state, canonicalizable.getValue());
             ValueNode valueAlias = valueObj != null ? valueObj.getMaterializedValue() : getScalarAlias(canonicalizable.getValue());
@@ -272,7 +274,6 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                 canonicalizedValue = (ValueNode) canonicalizable.canonical(tool, valueAlias);
             }
         } else if (node instanceof Canonicalizable.Binary<?>) {
-            @SuppressWarnings("unchecked")
             Canonicalizable.Binary<ValueNode> canonicalizable = (Canonicalizable.Binary<ValueNode>) node;
             ObjectState xObj = getObjectState(state, canonicalizable.getX());
             ValueNode xAlias = xObj != null ? xObj.getMaterializedValue() : getScalarAlias(canonicalizable.getX());
@@ -296,7 +297,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                 }
             } else {
                 if (!prepareCanonicalNode(canonicalizedValue, state, effects)) {
-                    VirtualUtil.trace(node.getOptions(), "replacement via canonicalization too complex: %s -> %s", node, canonicalizedValue);
+                    VirtualUtil.trace(node.getOptions(), debug, "replacement via canonicalization too complex: %s -> %s", node, canonicalizedValue);
                     return false;
                 }
                 if (canonicalizedValue instanceof ControlSinkNode) {
@@ -307,7 +308,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                     addScalarAlias(node, canonicalizedValue);
                 }
             }
-            VirtualUtil.trace(node.getOptions(), "replaced via canonicalization: %s -> %s", node, canonicalizedValue);
+            VirtualUtil.trace(node.getOptions(), debug, "replaced via canonicalization: %s -> %s", node, canonicalizedValue);
             return true;
         }
         return false;
@@ -350,7 +351,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
      * {@link VirtualObjectState}.
      */
     private void processNodeInputs(ValueNode node, FixedNode insertBefore, BlockT state, GraphEffectList effects) {
-        VirtualUtil.trace(node.getOptions(), "processing nodewithstate: %s", node);
+        VirtualUtil.trace(node.getOptions(), debug, "processing nodewithstate: %s", node);
         for (Node input : node.inputs()) {
             if (input instanceof ValueNode) {
                 ValueNode alias = getAlias((ValueNode) input);
@@ -358,7 +359,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                     int id = ((VirtualObjectNode) alias).getObjectId();
                     ensureMaterialized(state, id, insertBefore, effects, COUNTER_MATERIALIZATIONS_UNHANDLED);
                     effects.replaceFirstInput(node, input, state.getObjectState(id).getMaterializedValue());
-                    VirtualUtil.trace(node.getOptions(), "replacing input %s at %s", input, node);
+                    VirtualUtil.trace(node.getOptions(), debug, "replacing input %s at %s", input, node);
                 }
             }
         }
@@ -390,7 +391,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
 
     private void addVirtualMappings(FrameState frameState, EconomicSet<VirtualObjectNode> virtual, BlockT state, GraphEffectList effects) {
         for (VirtualObjectNode obj : virtual) {
-            effects.addVirtualMapping(frameState, state.getObjectState(obj).createEscapeObjectState(obj));
+            effects.addVirtualMapping(frameState, state.getObjectState(obj).createEscapeObjectState(debug, obj));
         }
     }
 
@@ -427,9 +428,9 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
     /**
      * @return true if materialization happened, false if not.
      */
-    protected boolean ensureMaterialized(PartialEscapeBlockState<?> state, int object, FixedNode materializeBefore, GraphEffectList effects, DebugCounter counter) {
+    protected boolean ensureMaterialized(PartialEscapeBlockState<?> state, int object, FixedNode materializeBefore, GraphEffectList effects, CounterKey counter) {
         if (state.getObjectState(object).isVirtual()) {
-            counter.increment();
+            counter.increment(debug);
             VirtualObjectNode virtual = virtualObjects.get(object);
             state.materializeBefore(materializeBefore, virtual, effects);
             assert !updateStatesForMaterialized(state, virtual, state.getObjectState(object).getMaterializedValue()) : "method must already have been called before";
@@ -566,7 +567,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
             exitState.updateMaterializedValue(object, proxy);
         } else {
             if (initialObjState.getMaterializedValue() != exitObjState.getMaterializedValue()) {
-                Debug.log("materialized value changes within loop: %s vs. %s at %s", initialObjState.getMaterializedValue(), exitObjState.getMaterializedValue(), exitNode);
+                exitNode.getDebug().log("materialized value changes within loop: %s vs. %s at %s", initialObjState.getMaterializedValue(), exitObjState.getMaterializedValue(), exitNode);
             }
         }
     }
@@ -806,7 +807,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
         private boolean mergeObjectStates(int resultObject, int[] sourceObjects, PartialEscapeBlockState<?>[] states) {
             boolean compatible = true;
             boolean ensureVirtual = true;
-            IntFunction<Integer> getObject = index -> sourceObjects == null ? resultObject : sourceObjects[index];
+            IntUnaryOperator getObject = index -> sourceObjects == null ? resultObject : sourceObjects[index];
 
             VirtualObjectNode virtual = virtualObjects.get(resultObject);
             int entryCount = virtual.entryCount();
@@ -814,7 +815,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
             // determine all entries that have a two-slot value
             JavaKind[] twoSlotKinds = null;
             outer: for (int i = 0; i < states.length; i++) {
-                ObjectState objectState = states[i].getObjectState(getObject.apply(i));
+                ObjectState objectState = states[i].getObjectState(getObject.applyAsInt(i));
                 ValueNode[] entries = objectState.getEntries();
                 int valueIndex = 0;
                 ensureVirtual &= objectState.getEnsureVirtualized();
@@ -845,7 +846,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                     if (twoSlotKinds[valueIndex] != null) {
                         assert valueIndex < virtual.entryCount() - 1 && virtual.entryKind(valueIndex) == JavaKind.Int && virtual.entryKind(valueIndex + 1) == JavaKind.Int;
                         for (int i = 0; i < states.length; i++) {
-                            int object = getObject.apply(i);
+                            int object = getObject.applyAsInt(i);
                             ObjectState objectState = states[i].getObjectState(object);
                             ValueNode value = objectState.getEntry(valueIndex);
                             JavaKind valueKind = value.getStackKind();
@@ -867,13 +868,13 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
 
             if (compatible) {
                 // virtual objects are compatible: create phis for all entries that need them
-                ValueNode[] values = states[0].getObjectState(getObject.apply(0)).getEntries().clone();
+                ValueNode[] values = states[0].getObjectState(getObject.applyAsInt(0)).getEntries().clone();
                 PhiNode[] phis = getValuePhis(virtual, virtual.entryCount());
                 int valueIndex = 0;
                 while (valueIndex < values.length) {
                     for (int i = 1; i < states.length; i++) {
                         if (phis[valueIndex] == null) {
-                            ValueNode field = states[i].getObjectState(getObject.apply(i)).getEntry(valueIndex);
+                            ValueNode field = states[i].getObjectState(getObject.applyAsInt(i)).getEntry(valueIndex);
                             if (values[valueIndex] != field) {
                                 phis[valueIndex] = createValuePhi(values[valueIndex].stamp().unrestricted());
                             }
@@ -900,7 +901,7 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                             materialized |= mergeObjectEntry(getObject, states, phi, i);
                         } else {
                             for (int i2 = 0; i2 < states.length; i2++) {
-                                ObjectState state = states[i2].getObjectState(getObject.apply(i2));
+                                ObjectState state = states[i2].getObjectState(getObject.applyAsInt(i2));
                                 if (!state.isVirtual()) {
                                     break;
                                 }
@@ -910,19 +911,19 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                         values[i] = phi;
                     }
                 }
-                newState.addObject(resultObject, new ObjectState(values, states[0].getObjectState(getObject.apply(0)).getLocks(), ensureVirtual));
+                newState.addObject(resultObject, new ObjectState(values, states[0].getObjectState(getObject.applyAsInt(0)).getLocks(), ensureVirtual));
                 return materialized;
             } else {
                 // not compatible: materialize in all predecessors
                 PhiNode materializedValuePhi = getPhi(resultObject, StampFactory.forKind(JavaKind.Object));
                 for (int i = 0; i < states.length; i++) {
                     Block predecessor = getPredecessor(i);
-                    if (!ensureVirtual && states[i].getObjectState(virtual).isVirtual()) {
+                    if (!ensureVirtual && states[i].getObjectState(getObject.applyAsInt(i)).isVirtual()) {
                         // we can materialize if not all inputs are "ensureVirtualized"
-                        states[i].getObjectState(virtual).setEnsureVirtualized(false);
+                        states[i].getObjectState(getObject.applyAsInt(i)).setEnsureVirtualized(false);
                     }
-                    ensureMaterialized(states[i], getObject.apply(i), predecessor.getEndNode(), blockEffects.get(predecessor), COUNTER_MATERIALIZATIONS_MERGE);
-                    setPhiInput(materializedValuePhi, i, states[i].getObjectState(getObject.apply(i)).getMaterializedValue());
+                    ensureMaterialized(states[i], getObject.applyAsInt(i), predecessor.getEndNode(), blockEffects.get(predecessor), COUNTER_MATERIALIZATIONS_MERGE);
+                    setPhiInput(materializedValuePhi, i, states[i].getObjectState(getObject.applyAsInt(i)).getMaterializedValue());
                 }
                 newState.addObject(resultObject, new ObjectState(materializedValuePhi, null, ensureVirtual));
                 return true;
@@ -935,10 +936,10 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
          *
          * @return true if materialization happened during the merge, false otherwise
          */
-        private boolean mergeObjectEntry(IntFunction<Integer> objectIdFunc, PartialEscapeBlockState<?>[] states, PhiNode phi, int entryIndex) {
+        private boolean mergeObjectEntry(IntUnaryOperator objectIdFunc, PartialEscapeBlockState<?>[] states, PhiNode phi, int entryIndex) {
             boolean materialized = false;
             for (int i = 0; i < states.length; i++) {
-                int object = objectIdFunc.apply(i);
+                int object = objectIdFunc.applyAsInt(i);
                 ObjectState objectState = states[i].getObjectState(object);
                 if (!objectState.isVirtual()) {
                     break;
@@ -1007,18 +1008,25 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
                     for (int i = 0; i < states.length; i++) {
                         VirtualObjectNode virtual = virtualObjs[i];
 
-                        boolean identitySurvives = virtual.hasIdentity() &&
-                                        // check whether we trivially see that this is the only
-                                        // reference to this allocation
-                                        !isSingleUsageAllocation(getPhiValueAt(phi, i));
-
-                        if (identitySurvives || !firstVirtual.type().equals(virtual.type()) || firstVirtual.entryCount() != virtual.entryCount()) {
+                        if (!firstVirtual.type().equals(virtual.type()) || firstVirtual.entryCount() != virtual.entryCount()) {
                             compatible = false;
                             break;
                         }
                         if (!states[0].getObjectState(firstVirtual).locksEqual(states[i].getObjectState(virtual))) {
                             compatible = false;
                             break;
+                        }
+                    }
+                    if (compatible) {
+                        for (int i = 0; i < states.length; i++) {
+                            VirtualObjectNode virtual = virtualObjs[i];
+                            /*
+                             * check whether we trivially see that this is the only reference to
+                             * this allocation
+                             */
+                            if (virtual.hasIdentity() && !isSingleUsageAllocation(getPhiValueAt(phi, i), virtualObjs, states[i])) {
+                                compatible = false;
+                            }
                         }
                     }
                     if (compatible) {
@@ -1067,14 +1075,34 @@ public abstract class PartialEscapeClosure<BlockT extends PartialEscapeBlockStat
             return materialized;
         }
 
-        private boolean isSingleUsageAllocation(ValueNode value) {
+        private boolean isSingleUsageAllocation(ValueNode value, VirtualObjectNode[] virtualObjs, PartialEscapeBlockState<?> state) {
             /*
              * If the phi input is an allocation, we know that it is a "fresh" value, i.e., that
              * this is a value that will only appear through this source, and cannot appear anywhere
              * else. If the phi is also the only usage of this input, we know that no other place
              * can check object identity against it, so it is safe to lose the object identity here.
              */
-            return value instanceof AllocatedObjectNode && value.hasExactlyOneUsage();
+            if (!(value instanceof AllocatedObjectNode && value.hasExactlyOneUsage())) {
+                return false;
+            }
+
+            /*
+             * Check that the state only references the one virtual object from the Phi.
+             */
+            VirtualObjectNode singleVirtual = null;
+            for (int v = 0; v < virtualObjs.length; v++) {
+                if (state.contains(virtualObjs[v])) {
+                    if (singleVirtual == null) {
+                        singleVirtual = virtualObjs[v];
+                    } else if (singleVirtual != virtualObjs[v]) {
+                        /*
+                         * More than one virtual object is visible in the object state.
+                         */
+                        return false;
+                    }
+                }
+            }
+            return true;
         }
     }
 

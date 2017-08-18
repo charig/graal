@@ -49,6 +49,7 @@ import com.oracle.truffle.api.debug.DebuggerTags;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.instrumentation.ProvidedTags;
 import com.oracle.truffle.api.instrumentation.StandardTags;
+import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.metadata.ScopeProvider;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.source.Source;
@@ -62,7 +63,7 @@ import com.oracle.truffle.sl.runtime.SLContext;
 import com.oracle.truffle.sl.runtime.SLFunction;
 import com.oracle.truffle.sl.runtime.SLNull;
 
-@TruffleLanguage.Registration(name = "SL", version = "0.12", mimeType = SLLanguage.MIME_TYPE)
+@TruffleLanguage.Registration(id = "sl", name = "SL", version = "0.12", mimeType = SLLanguage.MIME_TYPE)
 @ProvidedTags({StandardTags.CallTag.class, StandardTags.StatementTag.class, StandardTags.RootTag.class, DebuggerTags.AlwaysHalt.class})
 public final class SLLanguage extends TruffleLanguage<SLContext> implements ScopeProvider<SLContext> {
     public static volatile int counter;
@@ -130,6 +131,11 @@ public final class SLLanguage extends TruffleLanguage<SLContext> implements Scop
     }
 
     @Override
+    protected Object lookupSymbol(SLContext context, String symbolName) {
+        return context.getFunctionRegistry().lookup(symbolName, false);
+    }
+
+    @Override
     protected Object getLanguageGlobal(SLContext context) {
         /*
          * The context itself is the global function registry. SL does not have global variables.
@@ -144,7 +150,11 @@ public final class SLLanguage extends TruffleLanguage<SLContext> implements Scop
 
     @Override
     protected boolean isObjectOfLanguage(Object object) {
-        return object instanceof SLFunction;
+        if (!(object instanceof TruffleObject)) {
+            return false;
+        }
+        TruffleObject truffleObject = (TruffleObject) object;
+        return truffleObject instanceof SLFunction || truffleObject instanceof SLBigNumber || SLContext.isSLObject(truffleObject);
     }
 
     @Override
@@ -193,6 +203,10 @@ public final class SLLanguage extends TruffleLanguage<SLContext> implements Scop
     @Override
     public AbstractScope findScope(SLContext context, Node node, Frame frame) {
         return SLLexicalScope.createScope(node);
+    }
+
+    public static SLContext getCurrentContext() {
+        return getCurrentContext(SLLanguage.class);
     }
 
 }

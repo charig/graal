@@ -23,8 +23,8 @@
 package org.graalvm.compiler.lir.alloc.trace.lsra;
 
 import static jdk.vm.ci.code.ValueUtil.isRegister;
-import static org.graalvm.compiler.core.common.GraalOptions.DetailedAsserts;
 import static org.graalvm.compiler.lir.LIRValueUtil.asConstant;
+import static org.graalvm.compiler.lir.LIRValueUtil.asVariable;
 import static org.graalvm.compiler.lir.LIRValueUtil.isConstantValue;
 import static org.graalvm.compiler.lir.LIRValueUtil.isStackSlotValue;
 import static org.graalvm.compiler.lir.LIRValueUtil.isVirtualStackSlot;
@@ -35,8 +35,9 @@ import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
 import org.graalvm.compiler.core.common.alloc.Trace;
 import org.graalvm.compiler.core.common.alloc.TraceBuilderResult;
 import org.graalvm.compiler.core.common.cfg.AbstractBlockBase;
-import org.graalvm.compiler.debug.Debug;
-import org.graalvm.compiler.debug.DebugCounter;
+import org.graalvm.compiler.debug.Assertions;
+import org.graalvm.compiler.debug.CounterKey;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.Indent;
 import org.graalvm.compiler.lir.LIR;
 import org.graalvm.compiler.lir.LIRInstruction;
@@ -68,16 +69,18 @@ final class TraceLinearScanResolveDataFlowPhase extends TraceLinearScanAllocatio
     private static final class Resolver {
         private final TraceLinearScan allocator;
         private final TraceBuilderResult traceBuilderResult;
+        private final DebugContext debug;
 
         private Resolver(TraceLinearScan allocator, TraceBuilderResult traceBuilderResult) {
             this.allocator = allocator;
             this.traceBuilderResult = traceBuilderResult;
+            this.debug = allocator.getDebug();
         }
 
         private void resolveFindInsertPos(AbstractBlockBase<?> fromBlock, AbstractBlockBase<?> toBlock, TraceLocalMoveResolver moveResolver) {
             if (fromBlock.getSuccessorCount() <= 1) {
-                if (Debug.isLogEnabled()) {
-                    Debug.log("inserting moves at end of fromBlock B%d", fromBlock.getId());
+                if (debug.isLogEnabled()) {
+                    debug.log("inserting moves at end of fromBlock B%d", fromBlock.getId());
                 }
 
                 ArrayList<LIRInstruction> instructions = allocator.getLIR().getLIRforBlock(fromBlock);
@@ -90,11 +93,11 @@ final class TraceLinearScanResolveDataFlowPhase extends TraceLinearScanAllocatio
                 }
 
             } else {
-                if (Debug.isLogEnabled()) {
-                    Debug.log("inserting moves at beginning of toBlock B%d", toBlock.getId());
+                if (debug.isLogEnabled()) {
+                    debug.log("inserting moves at beginning of toBlock B%d", toBlock.getId());
                 }
 
-                if (DetailedAsserts.getValue(allocator.getOptions())) {
+                if (Assertions.detailedAssertionsEnabled(allocator.getOptions())) {
                     assert allocator.getLIR().getLIRforBlock(fromBlock).get(0) instanceof StandardOp.LabelOp : "block does not start with a label";
 
                     /*
@@ -122,7 +125,7 @@ final class TraceLinearScanResolveDataFlowPhase extends TraceLinearScanAllocatio
                 // no resolution necessary
                 return;
             }
-            try (Indent indent = Debug.logAndIndent("resolve data flow")) {
+            try (Indent indent = debug.logAndIndent("resolve data flow")) {
 
                 TraceLocalMoveResolver moveResolver = allocator.createMoveResolver();
                 AbstractBlockBase<?> toBlock = null;
@@ -147,7 +150,7 @@ final class TraceLinearScanResolveDataFlowPhase extends TraceLinearScanAllocatio
 
         @SuppressWarnings("try")
         private void resolveCollectMappings(AbstractBlockBase<?> fromBlock, AbstractBlockBase<?> toBlock, TraceLocalMoveResolver moveResolver) {
-            try (Indent indent0 = Debug.logAndIndent("Edge %s -> %s", fromBlock, toBlock)) {
+            try (Indent indent0 = debug.logAndIndent("Edge %s -> %s", fromBlock, toBlock)) {
                 // collect all intervals that have been split between
                 // fromBlock and toBlock
                 int toId = allocator.getFirstLirInstructionId(toBlock);
@@ -179,8 +182,8 @@ final class TraceLinearScanResolveDataFlowPhase extends TraceLinearScanAllocatio
             return currentTrace.getId() == traceBuilderResult.getTraceForBlock(block).getId();
         }
 
-        private static final DebugCounter numResolutionMoves = Debug.counter("TraceRA[numTraceLSRAResolutionMoves]");
-        private static final DebugCounter numStackToStackMoves = Debug.counter("TraceRA[numTraceLSRAStackToStackMoves]");
+        private static final CounterKey numResolutionMoves = DebugContext.counter("TraceRA[numTraceLSRAResolutionMoves]");
+        private static final CounterKey numStackToStackMoves = DebugContext.counter("TraceRA[numTraceLSRAStackToStackMoves]");
 
         private void addMapping(Value phiFrom, Value phiTo, int fromId, int toId, TraceLocalMoveResolver moveResolver) {
             assert !isRegister(phiFrom) : "Out is a register: " + phiFrom;
@@ -190,13 +193,13 @@ final class TraceLinearScanResolveDataFlowPhase extends TraceLinearScanAllocatio
                 // no need to handle virtual stack slots
                 return;
             }
-            TraceInterval toParent = allocator.intervalFor(phiTo);
+            TraceInterval toParent = allocator.intervalFor(asVariable(phiTo));
             if (isConstantValue(phiFrom)) {
-                numResolutionMoves.increment();
+                numResolutionMoves.increment(debug);
                 TraceInterval toInterval = allocator.splitChildAtOpId(toParent, toId, LIRInstruction.OperandMode.DEF);
                 moveResolver.addMapping(asConstant(phiFrom), toInterval);
             } else {
-                addMapping(allocator.intervalFor(phiFrom), toParent, fromId, toId, moveResolver);
+                addMapping(allocator.intervalFor(asVariable(phiFrom)), toParent, fromId, toId, moveResolver);
             }
         }
 
@@ -208,9 +211,9 @@ final class TraceLinearScanResolveDataFlowPhase extends TraceLinearScanAllocatio
                 return;
             }
             if (fromInterval != toInterval) {
-                numResolutionMoves.increment();
-                if (numStackToStackMoves.isEnabled() && isStackSlotValue(toInterval.location()) && isStackSlotValue(fromInterval.location())) {
-                    numStackToStackMoves.increment();
+                numResolutionMoves.increment(debug);
+                if (isStackSlotValue(toInterval.location()) && isStackSlotValue(fromInterval.location())) {
+                    numStackToStackMoves.increment(debug);
                 }
                 moveResolver.addMapping(fromInterval, toInterval);
             }

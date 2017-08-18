@@ -30,13 +30,10 @@ import java.util.Arrays;
 import java.util.Formatter;
 import java.util.List;
 
-import org.graalvm.api.word.LocationIdentity;
-import org.graalvm.compiler.core.common.GraalOptions;
 import org.graalvm.compiler.core.common.SuppressFBWarnings;
 import org.graalvm.compiler.core.common.cfg.AbstractControlFlowGraph;
 import org.graalvm.compiler.core.common.cfg.BlockMap;
 import org.graalvm.compiler.debug.Assertions;
-import org.graalvm.compiler.debug.Debug;
 import org.graalvm.compiler.graph.Graph.NodeEvent;
 import org.graalvm.compiler.graph.Graph.NodeEventListener;
 import org.graalvm.compiler.graph.Graph.NodeEventScope;
@@ -51,6 +48,7 @@ import org.graalvm.compiler.nodes.ControlSinkNode;
 import org.graalvm.compiler.nodes.ControlSplitNode;
 import org.graalvm.compiler.nodes.DeoptimizeNode;
 import org.graalvm.compiler.nodes.FixedNode;
+import org.graalvm.compiler.nodes.FixedWithNextNode;
 import org.graalvm.compiler.nodes.GuardNode;
 import org.graalvm.compiler.nodes.IfNode;
 import org.graalvm.compiler.nodes.KillingBeginNode;
@@ -75,7 +73,7 @@ import org.graalvm.compiler.nodes.memory.MemoryCheckpoint;
 import org.graalvm.compiler.nodes.spi.ValueProxy;
 import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.Phase;
-import org.graalvm.compiler.nodes.FixedWithNextNode;
+import org.graalvm.word.LocationIdentity;
 
 public final class SchedulePhase extends Phase {
 
@@ -108,7 +106,7 @@ public final class SchedulePhase extends Phase {
     }
 
     private NodeEventScope verifyImmutableGraph(StructuredGraph graph) {
-        if (immutableGraph && Assertions.ENABLED) {
+        if (immutableGraph && Assertions.assertionsEnabled()) {
             return graph.trackNodeEvents(new NodeEventListener() {
                 @Override
                 public void event(NodeEvent e, Node node) {
@@ -179,7 +177,7 @@ public final class SchedulePhase extends Phase {
                 sortNodesLatestWithinBlock(cfg, earliestBlockToNodesMap, latestBlockToNodesMap, currentNodeMap, watchListMap, visited);
 
                 assert verifySchedule(cfg, latestBlockToNodesMap, currentNodeMap);
-                assert (!GraalOptions.DetailedAsserts.getValue(graph.getOptions())) || MemoryScheduleVerification.check(cfg.getStartBlock(), latestBlockToNodesMap);
+                assert (!Assertions.detailedAssertionsEnabled(graph.getOptions())) || MemoryScheduleVerification.check(cfg.getStartBlock(), latestBlockToNodesMap);
 
                 this.blockToNodesMap = latestBlockToNodesMap;
 
@@ -881,7 +879,7 @@ public final class SchedulePhase extends Phase {
                 }
             }
 
-            assert (!GraalOptions.DetailedAsserts.getValue(cfg.graph.getOptions())) || MemoryScheduleVerification.check(cfg.getStartBlock(), blockToNodes);
+            assert (!Assertions.detailedAssertionsEnabled(cfg.graph.getOptions())) || MemoryScheduleVerification.check(cfg.getStartBlock(), blockToNodes);
         }
 
         private static void processStackPhi(NodeStack stack, PhiNode phiNode, NodeMap<MicroBlock> nodeToBlock, NodeBitMap visited) {
@@ -1014,7 +1012,7 @@ public final class SchedulePhase extends Phase {
             } else if (n instanceof GuardNode) {
                 buf.format(", anchor: %s", ((GuardNode) n).getAnchor());
             }
-            Debug.log("%s", buf);
+            n.getDebug().log("%s", buf);
         }
 
         public ControlFlowGraph getCFG() {

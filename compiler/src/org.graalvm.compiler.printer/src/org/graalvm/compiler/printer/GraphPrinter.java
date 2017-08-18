@@ -30,12 +30,17 @@ import java.util.List;
 import java.util.Map;
 
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
+import org.graalvm.compiler.debug.DebugContext;
+import org.graalvm.compiler.debug.DebugContext.Scope;
 import org.graalvm.compiler.graph.Graph;
 import org.graalvm.compiler.nodes.ConstantNode;
+import org.graalvm.compiler.nodes.StructuredGraph;
+import org.graalvm.compiler.phases.schedule.SchedulePhase;
 import org.graalvm.compiler.serviceprovider.JDK9Method;
 
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaKind;
+import jdk.vm.ci.meta.JavaType;
 import jdk.vm.ci.meta.MetaUtil;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.runtime.JVMCI;
@@ -47,17 +52,15 @@ interface GraphPrinter extends Closeable {
      * Starts a new group of graphs with the given name, short name and method byte code index (BCI)
      * as properties.
      */
-    void beginGroup(String name, String shortName, ResolvedJavaMethod method, int bci, Map<Object, Object> properties) throws IOException;
+    void beginGroup(DebugContext debug, String name, String shortName, ResolvedJavaMethod method, int bci, Map<Object, Object> properties) throws IOException;
 
     /**
      * Prints an entire {@link Graph} with the specified title, optionally using short names for
      * nodes.
      */
-    void print(Graph graph, String title, Map<Object, Object> properties) throws IOException;
+    void print(DebugContext debug, Graph graph, Map<Object, Object> properties, int id, String format, Object... args) throws IOException;
 
     SnippetReflectionProvider getSnippetReflectionProvider();
-
-    void setSnippetReflectionProvider(SnippetReflectionProvider snippetReflection);
 
     /**
      * Ends the current group.
@@ -141,6 +144,32 @@ interface GraphPrinter extends Closeable {
         }
     }
 
+    /**
+     * Replaces all {@link JavaType} elements in {@code args} with the result of
+     * {@link JavaType#getUnqualifiedName()}.
+     *
+     * @return a copy of {@code args} with the above mentioned substitutions or {@code args} if no
+     *         substitutions were performed
+     */
+    default Object[] simplifyClassArgs(Object... args) {
+        Object[] res = args;
+        for (int i = 0; i < args.length; i++) {
+            Object arg = args[i];
+            if (arg instanceof JavaType) {
+                if (args == res) {
+                    res = new Object[args.length];
+                    for (int a = 0; a < i; a++) {
+                        res[a] = args[a];
+                    }
+                }
+                res[i] = ((JavaType) arg).getUnqualifiedName();
+            } else {
+                res[i] = arg;
+            }
+        }
+        return res;
+    }
+
     static String truncate(String s) {
         if (s.length() > MAX_CONSTANT_TO_STRING_LENGTH) {
             return s.substring(0, MAX_CONSTANT_TO_STRING_LENGTH - 3) + "...";
@@ -180,5 +209,24 @@ interface GraphPrinter extends Closeable {
             }
         }
         return buf.append('}').toString();
+    }
+
+    @SuppressWarnings("try")
+    static StructuredGraph.ScheduleResult getScheduleOrNull(Graph graph) {
+        if (graph instanceof StructuredGraph) {
+            StructuredGraph sgraph = (StructuredGraph) graph;
+            StructuredGraph.ScheduleResult scheduleResult = sgraph.getLastSchedule();
+            if (scheduleResult == null) {
+                DebugContext debug = graph.getDebug();
+                try (Scope scope = debug.disable()) {
+                    SchedulePhase schedule = new SchedulePhase(graph.getOptions());
+                    schedule.apply(sgraph);
+                    scheduleResult = sgraph.getLastSchedule();
+                } catch (Throwable t) {
+                }
+            }
+            return scheduleResult;
+        }
+        return null;
     }
 }

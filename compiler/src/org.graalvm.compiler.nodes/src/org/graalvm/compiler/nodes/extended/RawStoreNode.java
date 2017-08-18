@@ -26,7 +26,6 @@ import static org.graalvm.compiler.nodeinfo.InputType.State;
 import static org.graalvm.compiler.nodeinfo.NodeCycles.CYCLES_2;
 import static org.graalvm.compiler.nodeinfo.NodeSize.SIZE_1;
 
-import org.graalvm.api.word.LocationIdentity;
 import org.graalvm.compiler.core.common.type.StampFactory;
 import org.graalvm.compiler.graph.NodeClass;
 import org.graalvm.compiler.nodeinfo.NodeInfo;
@@ -40,7 +39,9 @@ import org.graalvm.compiler.nodes.spi.Lowerable;
 import org.graalvm.compiler.nodes.spi.LoweringTool;
 import org.graalvm.compiler.nodes.spi.Virtualizable;
 import org.graalvm.compiler.nodes.spi.VirtualizerTool;
+import org.graalvm.compiler.nodes.type.StampTool;
 import org.graalvm.compiler.nodes.virtual.VirtualObjectNode;
+import org.graalvm.word.LocationIdentity;
 
 import jdk.vm.ci.meta.Assumptions;
 import jdk.vm.ci.meta.JavaConstant;
@@ -124,7 +125,7 @@ public final class RawStoreNode extends UnsafeAccessNode implements StateSplit, 
                 int entryIndex = virtual.entryIndexForOffset(off, accessKind());
                 if (entryIndex != -1) {
                     JavaKind entryKind = virtual.entryKind(entryIndex);
-                    boolean canVirtualize = entryKind == accessKind() || entryKind == accessKind().getStackKind();
+                    boolean canVirtualize = entryKind == accessKind() || (entryKind == accessKind().getStackKind() && !StampTool.typeOrNull(object()).isArray());
                     if (!canVirtualize) {
                         /*
                          * Special case: If the entryKind is long, allow arbitrary kinds as long as

@@ -36,11 +36,17 @@ import java.util.List;
  * to parse the source string in {@link TruffleLanguage#parse}. The syntax of the source string is:
  *
  * <pre>
- * LibraryDescriptor ::= DefaultLibrary | LoadLibrary
+ * LibraryDescriptor ::= LibraryDefinition BindBlock?
+ * 
+ * LibraryDefinition ::= DefaultLibrary | LoadLibrary
  *
  * DefaultLibrary ::= 'default'
  *
  * LoadLibrary ::= 'load' [ '(' ident { '|' ident } ')' ] string
+ *
+ * BindBlock ::= '{' BindDirective* '}'
+ *
+ * BindDirective ::= ident Signature ';'
  * </pre>
  *
  * Implementors of the Truffle NFI must use {@link #parseSignature(java.lang.CharSequence)} to parse
@@ -50,11 +56,13 @@ import java.util.List;
  * <pre>
  * Signature ::= '(' [ Type { ',' Type } ] [ '...' Type { ',' Type } ] ')' ':' Type
  *
- * Type ::= Signature | SimpleType | ArrayType
+ * Type ::= Signature | SimpleType | ArrayType | EnvType
  *
  * SimpleType ::= ident
  *
  * ArrayType ::= '[' SimpleType ']'
+ *
+ * EnvType ::= 'env'
  * </pre>
  */
 public final class Parser {
@@ -86,19 +94,42 @@ public final class Parser {
     }
 
     private NativeLibraryDescriptor parseLibraryDescriptor() {
+        NativeLibraryDescriptor ret;
+
         Token token = lexer.next();
         String keyword = lexer.currentValue();
-        if (token == Token.IDENTIFIER) {
-            switch (keyword) {
-                case "load":
-                    return parseLoadLibrary();
-
-                case "default":
-                    return parseDefaultLibrary();
+        LIBRARY_DEFINITION: {
+            if (token == Token.IDENTIFIER) {
+                switch (keyword) {
+                    case "load":
+                        ret = parseLoadLibrary();
+                        break LIBRARY_DEFINITION;
+                    case "default":
+                        ret = parseDefaultLibrary();
+                        break LIBRARY_DEFINITION;
+                }
             }
+            throw new IllegalArgumentException(String.format("expected 'load' or 'default', but got '%s'", keyword));
         }
 
-        throw new IllegalArgumentException(String.format("expected 'load' or 'default', but got '%s'", keyword));
+        if (lexer.next() == Token.OPENBRACE) {
+            for (;;) {
+                Token closeOrId = lexer.next();
+                if (closeOrId == Token.CLOSEBRACE) {
+                    break;
+                }
+                if (closeOrId != Token.IDENTIFIER) {
+                    throw new IllegalArgumentException("Expecting identifier in library body");
+                }
+                String ident = lexer.currentValue();
+                NativeSignature sig = parseSignature();
+                ret.register(ident, sig);
+                if (lexer.next() != Token.SEMICOLON) {
+                    throw new IllegalArgumentException("Expecting semicolon");
+                }
+            }
+        }
+        return ret;
     }
 
     private static NativeLibraryDescriptor parseDefaultLibrary() {
@@ -151,7 +182,7 @@ public final class Parser {
             case OPENBRACKET:
                 return parseArrayType();
             case IDENTIFIER:
-                return parseSimpleType();
+                return parseSimpleType(true);
             default:
                 throw new IllegalArgumentException(String.format("expected type, but got '%s'", lexer.currentValue()));
         }
@@ -196,16 +227,20 @@ public final class Parser {
 
     private NativeArrayTypeMirror parseArrayType() {
         expect(Token.OPENBRACKET);
-        NativeSimpleTypeMirror elementType = parseSimpleType();
+        NativeTypeMirror elementType = parseSimpleType(false);
         expect(Token.CLOSEBRACKET);
 
         return new NativeArrayTypeMirror(elementType);
     }
 
-    private NativeSimpleTypeMirror parseSimpleType() {
+    private NativeTypeMirror parseSimpleType(boolean envAllowed) {
         expect(Token.IDENTIFIER);
         String identifier = lexer.currentValue();
-        NativeSimpleType simpleType = NativeSimpleType.valueOf(identifier.toUpperCase());
-        return new NativeSimpleTypeMirror(simpleType);
+        if (envAllowed && "env".equalsIgnoreCase(identifier)) {
+            return new NativeEnvTypeMirror();
+        } else {
+            NativeSimpleType simpleType = NativeSimpleType.valueOf(identifier.toUpperCase());
+            return new NativeSimpleTypeMirror(simpleType);
+        }
     }
 }

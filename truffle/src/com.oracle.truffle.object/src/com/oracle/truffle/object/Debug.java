@@ -31,7 +31,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-import com.oracle.truffle.api.nodes.GraphPrintVisitor;
 import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.object.Property;
 
@@ -114,7 +113,7 @@ class Debug {
                     try (PrintWriter out = new PrintWriter(getOutputFile("dot"), "UTF-8")) {
                         com.oracle.truffle.object.debug.GraphvizShapeVisitor visitor = new com.oracle.truffle.object.debug.GraphvizShapeVisitor();
                         for (ShapeImpl shape : getAllShapes()) {
-                            shape.accept(visitor);
+                            visitor.visitShape(shape);
                         }
                         out.println(visitor);
                     }
@@ -129,7 +128,7 @@ class Debug {
                                 out.println(",");
                             }
                             first = false;
-                            out.print(shape.accept(new com.oracle.truffle.object.debug.JSONShapeVisitor()));
+                            out.print(new com.oracle.truffle.object.debug.JSONShapeVisitor().visitShape(shape));
                         }
                         if (!first) {
                             out.println();
@@ -139,20 +138,20 @@ class Debug {
                 }
 
                 private void dumpIGV() {
-                    GraphPrintVisitor printer = new GraphPrintVisitor();
+                    com.oracle.truffle.api.nodes.GraphPrintVisitor printer = new com.oracle.truffle.api.nodes.GraphPrintVisitor();
                     printer.beginGroup("shapes");
                     com.oracle.truffle.object.debug.IGVShapeVisitor visitor = new com.oracle.truffle.object.debug.IGVShapeVisitor(printer);
                     for (ShapeImpl shape : getAllShapes()) {
                         if (isRootShape(shape)) {
                             printer.beginGraph(DebugShapeVisitor.getId(shape));
-                            shape.accept(visitor);
+                            visitor.visitShape(shape);
                             printer.endGraph();
                         }
                     }
                     printer.beginGraph("all shapes");
                     for (ShapeImpl shape : getAllShapes()) {
                         if (isRootShape(shape)) {
-                            shape.accept(visitor);
+                            visitor.visitShape(shape);
                         }
                     }
                     printer.endGraph();

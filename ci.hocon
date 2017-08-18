@@ -3,12 +3,19 @@ builds = []
 
 binaries-repository = "lafo-snapshots"
 
+#SDK
+include "sdk/ci.hocon"
+
 #Truffle
 include "truffle/ci.hocon"
 
 #Compiler
 compiler-suite-root = "./compiler"
 logPatterns = ["*.bgv"]
+
+#Examples
+#Examples gate also disabled.
+#include "examples/ci.hocon"
 
 jvm-config.default = "graal-core"
 

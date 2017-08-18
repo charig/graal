@@ -30,6 +30,7 @@ import os
 from os.path import join, exists
 from tempfile import mkdtemp, mkstemp
 from shutil import rmtree
+import itertools
 
 import mx
 import mx_benchmark
@@ -123,7 +124,7 @@ mx_benchmark.add_java_vm(JvmciJdkVm('server', 'default', ['-server', '-XX:-Enabl
 mx_benchmark.add_java_vm(JvmciJdkVm('server', 'hosted', ['-server', '-XX:+EnableJVMCI']), _suite, 3)
 
 def build_jvmci_vm_variants(raw_name, raw_config_name, extra_args, variants, include_default=True, suite=None, priority=0):
-    for prefix, args in [('', ['-XX:+UseJVMCICompiler']), ('hosted-', [])]:
+    for prefix, args in [('', ['-XX:+UseJVMCICompiler']), ('hosted-', ['-XX:-UseJVMCICompiler'])]:
         extended_raw_config_name = prefix + raw_config_name
         extended_extra_args = extra_args + args
         if include_default:
@@ -164,12 +165,11 @@ class DebugValueBenchmarkMixin(object):
         super(DebugValueBenchmarkMixin, self).after(bmSuiteArgs)
 
     def vmArgs(self, bmSuiteArgs):
-        vmArgs = ['-Dgraal.DebugValueHumanReadable=false', '-Dgraal.DebugValueSummary=Name',
-                  '-Dgraal.DebugValueFile=' + self.get_csv_filename()] +\
+        vmArgs = ['-Dgraal.AggregatedMetricsFile=' + self.get_csv_filename()] +\
                   super(DebugValueBenchmarkMixin, self).vmArgs(bmSuiteArgs)
         return vmArgs
 
-    def getBechmarkName(self):
+    def getBenchmarkName(self):
         raise NotImplementedError()
 
     def benchSuiteName(self):
@@ -177,7 +177,7 @@ class DebugValueBenchmarkMixin(object):
 
     def shorten_vm_flags(self, args):
         # no need for debug value flags
-        filtered_args = [x for x in args if not x.startswith("-Dgraal.DebugValue")]
+        filtered_args = [x for x in args if not x.startswith("-Dgraal.AggregatedMetricsFile")]
         return super(DebugValueBenchmarkMixin, self).shorten_vm_flags(filtered_args)
 
     def get_csv_filename(self):
@@ -186,9 +186,10 @@ class DebugValueBenchmarkMixin(object):
 
 class DebugValueRule(mx_benchmark.CSVFixedFileRule):
     def __init__(self, debug_value_file, benchmark, bench_suite, metric_name, filter_fn, vm_flags, metric_unit=("<unit>", str)):
+        # pylint: disable=expression-not-assigned
         super(DebugValueRule, self).__init__(
             filename=debug_value_file,
-            colnames=['scope', 'name', 'value', 'unit'],
+            colnames=['name', 'value', 'unit'],
             replacement={
                 "benchmark": benchmark,
                 "bench-suite": bench_suite,
@@ -213,7 +214,8 @@ class TimingBenchmarkMixin(DebugValueBenchmarkMixin):
     timers = [
         "BackEnd",
         "FrontEnd",
-        "GraalCompiler",
+        "GraalCompiler",   # only compilation
+        "CompilationTime", # includes code installation
         # LIR stages
         "LIRPhaseTime_AllocationStage",
         "LIRPhaseTime_PostAllocationOptimizationStage",
@@ -228,7 +230,7 @@ class TimingBenchmarkMixin(DebugValueBenchmarkMixin):
 
     @staticmethod
     def timerArgs():
-        return ["-Dgraaldebug.timer.{0}=true".format(timer) for timer in TimingBenchmarkMixin.timers]
+        return ["-Dgraal.Timers=" + ','.join(TimingBenchmarkMixin.timers)]
 
     def vmArgs(self, bmSuiteArgs):
         vmArgs = TimingBenchmarkMixin.timerArgs() + super(TimingBenchmarkMixin, self).vmArgs(bmSuiteArgs)
@@ -249,14 +251,14 @@ class TimingBenchmarkMixin(DebugValueBenchmarkMixin):
 
     def shorten_vm_flags(self, args):
         # no need for timer names
-        filtered_args = [x for x in args if not x.startswith("-Dgraaldebug.timer")]
+        filtered_args = [x for x in args if not x.startswith("-Dgraal.Timers=")]
         return super(TimingBenchmarkMixin, self).shorten_vm_flags(filtered_args)
 
     def rules(self, out, benchmarks, bmSuiteArgs):
         return [
                    DebugValueRule(
                        debug_value_file=self.get_csv_filename(),
-                       benchmark=self.getBechmarkName(),
+                       benchmark=self.getBenchmarkName(),
                        bench_suite=self.benchSuiteName(),
                        metric_name="compile-time",
                        vm_flags=self.shorten_vm_flags(self.vmArgs(bmSuiteArgs)),
@@ -277,10 +279,10 @@ class CounterBenchmarkMixin(DebugValueBenchmarkMixin):
 
     @staticmethod
     def counterArgs():
-        return ["-Dgraaldebug.counter.{0}=true".format(timer) for timer in CounterBenchmarkMixin.counters]
+        return "-Dgraal.Counters=" + ','.join(CounterBenchmarkMixin.counters)
 
     def vmArgs(self, bmSuiteArgs):
-        vmArgs = CounterBenchmarkMixin.counterArgs() + super(CounterBenchmarkMixin, self).vmArgs(bmSuiteArgs)
+        vmArgs = [CounterBenchmarkMixin.counterArgs()] + super(CounterBenchmarkMixin, self).vmArgs(bmSuiteArgs)
         return vmArgs
 
     @staticmethod
@@ -289,14 +291,14 @@ class CounterBenchmarkMixin(DebugValueBenchmarkMixin):
 
     def shorten_vm_flags(self, args):
         # not need for timer names
-        filtered_args = [x for x in args if not x.startswith("-Dgraaldebug.counter")]
+        filtered_args = [x for x in args if not x.startswith("-Dgraal.Counters=")]
         return super(CounterBenchmarkMixin, self).shorten_vm_flags(filtered_args)
 
     def rules(self, out, benchmarks, bmSuiteArgs):
         return [
             DebugValueRule(
                 debug_value_file=self.get_csv_filename(),
-                benchmark=self.getBechmarkName(),
+                benchmark=self.getBenchmarkName(),
                 bench_suite=self.benchSuiteName(),
                 metric_name="count",
                 metric_unit="#",
@@ -315,7 +317,7 @@ class DaCapoTimingBenchmarkMixin(TimingBenchmarkMixin, CounterBenchmarkMixin):
         self.currentBenchname = benchname
         return super(DaCapoTimingBenchmarkMixin, self).postprocessRunArgs(benchname, runArgs)
 
-    def getBechmarkName(self):
+    def getBenchmarkName(self):
         return self.currentBenchname
 
     def removeWarmup(self, results):
@@ -332,14 +334,13 @@ class MoveProfilingBenchmarkMixin(object):
 
     See org.graalvm.compiler.lir.profiling.MoveProfilingPhase for more details.
     """
-    benchmark_counters_file = 'benchmark-counters'
+    benchmark_counters_file = 'benchmark-counters.csv'
 
     def vmArgs(self, bmSuiteArgs):
         vmArgs = [
                   self.get_dynamic_counters_argument(),
                   '-XX:JVMCICounterSize=10',
                   '-Dgraal.LIRProfileMoves=true',
-                  '-Dgraal.DynamicCountersHumanReadable=false',
                   '-Dgraal.DynamicCountersPrintGroupSeparator=false',
                   '-Dgraal.BenchmarkCountersFile=' + MoveProfilingBenchmarkMixin.benchmark_counters_file] + super(MoveProfilingBenchmarkMixin, self).vmArgs(bmSuiteArgs)
         return vmArgs
@@ -352,7 +353,7 @@ class MoveProfilingBenchmarkMixin(object):
         """
         raise NotImplementedError()
 
-    def getBechmarkName(self):
+    def getBenchmarkName(self):
         raise NotImplementedError()
 
     def benchSuiteName(self):
@@ -377,7 +378,7 @@ class MoveProfilingBenchmarkMixin(object):
             match_name="name",
             colnames=['type', 'group', 'name', 'value'],
             replacement={
-              "benchmark": self.getBechmarkName(),
+              "benchmark": self.getBenchmarkName(),
               "bench-suite": self.benchSuiteName(),
               "vm": "jvmci",
               "config.name": "default",
@@ -411,7 +412,7 @@ class DaCapoMoveProfilingBenchmarkMixin(MoveProfilingBenchmarkMixin):
         self.currentBenchname = benchname
         return super(DaCapoMoveProfilingBenchmarkMixin, self).postprocessRunArgs(benchname, runArgs)
 
-    def getBechmarkName(self):
+    def getBenchmarkName(self):
         return self.currentBenchname
 
 
@@ -909,7 +910,11 @@ class SpecJvm2008BenchmarkSuite(mx_benchmark.JavaBenchmarkSuite):
     def createCommandLineArgs(self, benchmarks, bmSuiteArgs):
         if benchmarks is None:
             # No benchmark specified in the command line, so run everything.
-            benchmarks = self.benchmarkList(bmSuiteArgs)
+            benchmarks = [b for b in self.benchmarkList(bmSuiteArgs) if b != 'batik']
+        elif 'batik' in benchmarks:
+            mx.warn('Omitting batik as it uses Sun proprietary API not supported by OpenJDK')
+            benchmarks = [b for b in benchmarks if b != 'batik']
+
         vmArgs = self.vmArgs(bmSuiteArgs)
         runArgs = self.runArgs(bmSuiteArgs)
         return vmArgs + ["-jar"] + [self.specJvmPath()] + runArgs + benchmarks
@@ -1250,7 +1255,13 @@ class SpecJbb2015BenchmarkSuite(mx_benchmark.JavaBenchmarkSuite):
 mx_benchmark.add_bm_suite(SpecJbb2015BenchmarkSuite())
 
 
-class JMHRunnerGraalCoreBenchmarkSuite(mx_benchmark.JMHRunnerBenchmarkSuite):
+class JMHRunnerGraalCoreBenchmarkSuite(mx_benchmark.JMHRunnerBenchmarkSuite): # pylint: disable=too-many-ancestors
+
+    def alternative_suite(self):
+        return "jmh-whitebox"
+
+    def warning_only(self):
+        return False
 
     def name(self):
         return "jmh-graal-core-whitebox"
@@ -1281,6 +1292,54 @@ class JMHJarGraalCoreBenchmarkSuite(mx_benchmark.JMHJarBenchmarkSuite):
 
 
 mx_benchmark.add_bm_suite(JMHJarGraalCoreBenchmarkSuite())
+
+
+class JMHDistGraalCoreBenchmarkSuite(mx_benchmark.JMHDistBenchmarkSuite):
+
+    def name(self):
+        return "jmh-dist"
+
+    def group(self):
+        return "Graal"
+
+    def subgroup(self):
+        return "graal-compiler"
+
+    def filter_distribution(self, dist):
+        return super(JMHDistGraalCoreBenchmarkSuite, self).filter_distribution(dist) and \
+               not any(JMHDistWhiteboxBenchmarkSuite.whitebox_dependency(dist))
+
+
+mx_benchmark.add_bm_suite(JMHDistGraalCoreBenchmarkSuite())
+
+
+class JMHDistWhiteboxBenchmarkSuite(mx_benchmark.JMHDistBenchmarkSuite):
+
+    def name(self):
+        return "jmh-whitebox"
+
+    def group(self):
+        return "Graal"
+
+    def subgroup(self):
+        return "graal-compiler"
+
+    @staticmethod
+    def whitebox_dependency(dist):
+        return itertools.chain(
+            (dep.name.startswith('GRAAL') for dep in dist.deps),
+            (dep.name.startswith('org.graalvm.compiler') for dep in dist.archived_deps())
+        )
+
+    def filter_distribution(self, dist):
+        return super(JMHDistWhiteboxBenchmarkSuite, self).filter_distribution(dist) and \
+               any(JMHDistWhiteboxBenchmarkSuite.whitebox_dependency(dist))
+
+    def extraVmArgs(self):
+        return ['-XX:-UseJVMCIClassLoader'] + super(JMHDistWhiteboxBenchmarkSuite, self).extraVmArgs()
+
+
+mx_benchmark.add_bm_suite(JMHDistWhiteboxBenchmarkSuite())
 
 
 class RenaissanceBenchmarkSuite(mx_benchmark.JavaBenchmarkSuite, AveragingBenchmarkMixin):

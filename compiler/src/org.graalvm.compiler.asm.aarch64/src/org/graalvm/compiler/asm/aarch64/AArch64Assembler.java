@@ -22,6 +22,7 @@
  */
 package org.graalvm.compiler.asm.aarch64;
 
+import static jdk.vm.ci.aarch64.AArch64.cpuRegisters;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.ADD;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.ADDS;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.ADR;
@@ -94,6 +95,8 @@ import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.STR;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.STXR;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.SUB;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.SUBS;
+import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.TBZ;
+import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.TBNZ;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.UBFM;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.Instruction.UDIV;
 import static org.graalvm.compiler.asm.aarch64.AArch64Assembler.InstructionType.FP32;
@@ -475,6 +478,8 @@ public abstract class AArch64Assembler extends Assembler {
         BCOND(0x54000000),
         CBNZ(0x01000000),
         CBZ(0x00000000),
+        TBZ(0x36000000),
+        TBNZ(0x37000000),
 
         B(0x00000000),
         BL(0x80000000),
@@ -808,6 +813,82 @@ public abstract class AArch64Assembler extends Assembler {
         conditionalBranchInstruction(reg, imm21, generalFromSize(size), Instruction.CBZ, pos);
     }
 
+    /**
+     * Test a single bit and branch if the bit is nonzero.
+     *
+     * @param reg general purpose register. May not be null, zero-register or stackpointer.
+     * @param uimm6 Unsigned 6-bit bit index.
+     * @param imm16 signed 16 bit offset
+     */
+    protected void tbnz(Register reg, int uimm6, int imm16) {
+        tbnz(reg, uimm6, imm16, -1);
+    }
+
+    /**
+     * Test a single bit and branch if the bit is zero.
+     *
+     * @param reg general purpose register. May not be null, zero-register or stackpointer.
+     * @param uimm6 Unsigned 6-bit bit index.
+     * @param imm16 signed 16 bit offset
+     */
+    protected void tbz(Register reg, int uimm6, int imm16) {
+        tbz(reg, uimm6, imm16, -1);
+    }
+
+    /**
+     * Test a single bit and branch if the bit is nonzero.
+     *
+     * @param reg general purpose register. May not be null, zero-register or stackpointer.
+     * @param uimm6 Unsigned 6-bit bit index.
+     * @param imm16 signed 16 bit offset
+     * @param pos Position at which instruction is inserted into buffer. -1 means insert at end.
+     */
+    protected void tbnz(Register reg, int uimm6, int imm16, int pos) {
+        assert reg.getRegisterCategory().equals(CPU);
+        assert NumUtil.isUnsignedNbit(6, uimm6);
+        assert NumUtil.isSignedNbit(18, imm16);
+        assert (imm16 & 3) == 0;
+        // size bit is overloaded as top bit of uimm6 bit index
+        int size = (((uimm6 >> 5) & 1) == 0 ? 32 : 64);
+        // remaining 5 bits are encoded lower down
+        int uimm5 = uimm6 >> 1;
+        int offset = (imm16 & NumUtil.getNbitNumberInt(16)) >> 2;
+        InstructionType type = generalFromSize(size);
+        int encoding = type.encoding | TBNZ.encoding | (uimm5 << 19) | (offset << 5) | rd(reg);
+        if (pos == -1) {
+            emitInt(encoding);
+        } else {
+            emitInt(encoding, pos);
+        }
+    }
+
+    /**
+     * Test a single bit and branch if the bit is zero.
+     *
+     * @param reg general purpose register. May not be null, zero-register or stackpointer.
+     * @param uimm6 Unsigned 6-bit bit index.
+     * @param imm16 signed 16 bit offset
+     * @param pos Position at which instruction is inserted into buffer. -1 means insert at end.
+     */
+    protected void tbz(Register reg, int uimm6, int imm16, int pos) {
+        assert reg.getRegisterCategory().equals(CPU);
+        assert NumUtil.isUnsignedNbit(6, uimm6);
+        assert NumUtil.isSignedNbit(18, imm16);
+        assert (imm16 & 3) == 0;
+        // size bit is overloaded as top bit of uimm6 bit index
+        int size = (((uimm6 >> 5) & 1) == 0 ? 32 : 64);
+        // remaining 5 bits are encoded lower down
+        int uimm5 = uimm6 >> 1;
+        int offset = (imm16 & NumUtil.getNbitNumberInt(16)) >> 2;
+        InstructionType type = generalFromSize(size);
+        int encoding = type.encoding | TBZ.encoding | (uimm5 << 19) | (offset << 5) | rd(reg);
+        if (pos == -1) {
+            emitInt(encoding);
+        } else {
+            emitInt(encoding, pos);
+        }
+    }
+
     private void conditionalBranchInstruction(Register reg, int imm21, InstructionType type, Instruction instr, int pos) {
         assert reg.getRegisterCategory().equals(CPU);
         int instrEncoding = instr.encoding | CompareBranchOp;
@@ -928,6 +1009,100 @@ public abstract class AArch64Assembler extends Assembler {
         assert (srcSize == 8 || srcSize == 16 || srcSize == 32) && srcSize != targetSize;
         int transferSize = NumUtil.log2Ceil(srcSize / 8);
         loadStoreInstruction(LDRS, rt, address, generalFromSize(targetSize), transferSize);
+    }
+
+    public enum PrefetchMode {
+        PLDL1KEEP(0b00000),
+        PLDL1STRM(0b00001),
+        PLDL2KEEP(0b00010),
+        PLDL2STRM(0b00011),
+        PLDL3KEEP(0b00100),
+        PLDL3STRM(0b00101),
+
+        PLIL1KEEP(0b01000),
+        PLIL1STRM(0b01001),
+        PLIL2KEEP(0b01010),
+        PLIL2STRM(0b01011),
+        PLIL3KEEP(0b01100),
+        PLIL3STRM(0b01101),
+
+        PSTL1KEEP(0b10000),
+        PSTL1STRM(0b10001),
+        PSTL2KEEP(0b10010),
+        PSTL2STRM(0b10011),
+        PSTL3KEEP(0b10100),
+        PSTL3STRM(0b10101);
+
+        private final int encoding;
+
+        PrefetchMode(int encoding) {
+            this.encoding = encoding;
+        }
+
+        private static PrefetchMode[] modes = {
+                        PLDL1KEEP,
+                        PLDL1STRM,
+                        PLDL2KEEP,
+                        PLDL2STRM,
+                        PLDL3KEEP,
+                        PLDL3STRM,
+
+                        null,
+                        null,
+
+                        PLIL1KEEP,
+                        PLIL1STRM,
+                        PLIL2KEEP,
+                        PLIL2STRM,
+                        PLIL3KEEP,
+                        PLIL3STRM,
+
+                        null,
+                        null,
+
+                        PSTL1KEEP,
+                        PSTL1STRM,
+                        PSTL2KEEP,
+                        PSTL2STRM,
+                        PSTL3KEEP,
+                        PSTL3STRM
+        };
+
+        public static PrefetchMode lookup(int enc) {
+            assert enc >= 00 && enc < modes.length;
+            return modes[enc];
+        }
+
+        public Register toRegister() {
+            return cpuRegisters.get(encoding);
+        }
+    }
+
+    /*
+     * implements a prefetch at a 64-bit aligned address using a scaled 12 bit or unscaled 9 bit
+     * displacement addressing mode
+     *
+     * @param rt general purpose register. May not be null, zr or stackpointer.
+     *
+     * @param address only displacement addressing modes allowed. May not be null.
+     */
+    public void prfm(AArch64Address address, PrefetchMode mode) {
+        assert (address.getAddressingMode() == AddressingMode.IMMEDIATE_SCALED ||
+                        address.getAddressingMode() == AddressingMode.IMMEDIATE_UNSCALED ||
+                        address.getAddressingMode() == AddressingMode.REGISTER_OFFSET);
+        assert mode != null;
+        final int srcSize = 64;
+        final int transferSize = NumUtil.log2Ceil(srcSize / 8);
+        final Register rt = mode.toRegister();
+        // this looks weird but that's because loadStoreInstruction is weird
+        // instruction select fields are size [31:30], v [26] and opc [25:24]
+        // prfm requires size == 0b11, v == 0b0 and opc == 0b11
+        // passing LDRS ensures opc[1] == 0b1
+        // (n.b. passing LDR/STR makes no difference to opc[1:0]!!)
+        // passing General64 ensures opc[0] == 0b1 and v = 0b0
+        // (n.b. passing General32 ensures opc[0] == 0b0 and v = 0b0)
+        // srcSize 64 ensures size == 0b11
+        loadStoreInstruction(LDRS, rt, address, General64, transferSize);
     }
 
     /**

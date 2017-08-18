@@ -41,7 +41,6 @@ from mx_unittest import unittest
 from mx_javamodules import as_java_module
 import mx_gate
 import mx_unittest
-import mx_microbench
 
 import mx_graal_benchmark # pylint: disable=unused-import
 import mx_graal_tools #pylint: disable=unused-import
@@ -96,7 +95,7 @@ def _check_jvmci_version(jdk):
         mx.run([jdk.javac, '-d', binDir, javaSource])
     mx.run([jdk.java, '-cp', binDir, name])
 
-if os.environ.get('JVMCI_VERSION_CHECK', None) != 'ignore': 
+if os.environ.get('JVMCI_VERSION_CHECK', None) != 'ignore':
     _check_jvmci_version(jdk)
 
 class JVMCIClasspathEntry(object):
@@ -144,22 +143,6 @@ def add_bootclasspath_append(dep):
 
 mx_gate.add_jacoco_includes(['org.graalvm.compiler.*'])
 mx_gate.add_jacoco_excluded_annotations(['@Snippet', '@ClassSubstitution'])
-
-class JVMCIMicrobenchExecutor(mx_microbench.MicrobenchExecutor):
-
-    def parseVmArgs(self, vmArgs):
-        if isJDK8:
-            if _is_jvmci_enabled(vmArgs) and '-XX:-UseJVMCIClassLoader' not in vmArgs:
-                vmArgs = ['-XX:-UseJVMCIClassLoader'] + vmArgs
-        return ['-server'] + _parseVmArgs(vmArgs)
-
-    def parseForkedVmArgs(self, vmArgs):
-        return ['-server'] + _parseVmArgs(vmArgs)
-
-    def run_java(self, args):
-        return run_vm(args)
-
-mx_microbench.set_microbenchmark_executor(JVMCIMicrobenchExecutor())
 
 def _get_XX_option_value(vmargs, name, default):
     """
@@ -230,7 +213,7 @@ def _nodeCostDump(args, extraVMarguments=None):
 
 def _ctw_jvmci_export_args():
     """
-    Gets the VM args needed to export JVMCI API required by CTW. 
+    Gets the VM args needed to export JVMCI API required by CTW.
     """
     if isJDK8:
         return ['-XX:-UseJVMCIClassLoader']
@@ -243,10 +226,10 @@ def _ctw_jvmci_export_args():
 def _ctw_system_properties_suffix():
     out = mx.OutputCapture()
     out.data = 'System properties for CTW:\n\n'
-    args = ['-XX:+EnableJVMCI'] + _ctw_jvmci_export_args() 
+    args = ['-XX:+EnableJVMCI'] + _ctw_jvmci_export_args()
     args.extend(['-cp', mx.classpath('org.graalvm.compiler.hotspot.test', jdk=jdk),
             '-DCompileTheWorld.Help=true', 'org.graalvm.compiler.hotspot.test.CompileTheWorld'])
-    run_vm(args, out=out)
+    run_java(args, out=out, addDefaultArgs=False)
     return out.data
 
 def ctw(args, extraVMarguments=None):
@@ -255,16 +238,20 @@ def ctw(args, extraVMarguments=None):
     defaultCtwopts = 'Inline=false'
 
     parser = ArgumentParser(prog='mx ctw', formatter_class=RawDescriptionHelpFormatter, epilog=_ctw_system_properties_suffix())
-    parser.add_argument('--ctwopts', action='store', help='space separated JVMCI options used for CTW compilations (default: --ctwopts="' + defaultCtwopts + '")', default=defaultCtwopts, metavar='<options>')
+    parser.add_argument('--ctwopts', action='store', help='space separated Graal options used for CTW compilations (default: --ctwopts="' + defaultCtwopts + '")', metavar='<options>')
     parser.add_argument('--cp', '--jar', action='store', help='jar or class path denoting classes to compile', metavar='<path>')
     if not isJDK8:
         parser.add_argument('--limitmods', action='store', help='limits the set of compiled classes to only those in the listed modules', metavar='<modulename>[,<modulename>...]')
 
+    configArgs = [a for a in args if a.startswith('-DCompileTheWorld.Config=')]
     args, vmargs = parser.parse_known_args(args)
 
     if args.ctwopts:
-        # Replace spaces with '#' since it cannot contain spaces
+        if configArgs:
+            mx.abort('Cannot specify both --ctwopts and -DCompileTheWorld.Config')
         vmargs.append('-DCompileTheWorld.Config=' + re.sub(r'\s+', '#', args.ctwopts))
+    elif not configArgs:
+        vmargs.append('-DCompileTheWorld.Config=Inline=false')
 
     # suppress menubar and dock when running on Mac; exclude x11 classes as they may cause VM crashes (on Solaris)
     vmargs = ['-Djava.awt.headless=true'] + vmargs
@@ -347,8 +334,12 @@ def verify_jvmci_ci_versions(args):
             mx.abort("No JVMCI version found in {0} files!".format(msg))
         return version, dev
 
-    hocon_version, hocon_dev = _grep_version(glob.glob(join(mx.primary_suite().vc_dir, '*.hocon')) + glob.glob(join(mx.primary_suite().dir, 'ci*.hocon')) + glob.glob(join(mx.primary_suite().dir, 'ci*/*.hocon')), 'ci.hocon')
-    travis_version, travis_dev = _grep_version(glob.glob('.travis.yml'), 'TravisCI')
+    primary_suite = mx.primary_suite()
+    hocon_version, hocon_dev = _grep_version(
+        glob.glob(join(primary_suite.vc_dir, '*.hocon')) +
+        glob.glob(join(primary_suite.dir, 'ci*.hocon')) +
+        glob.glob(join(primary_suite.dir, 'ci*/*.hocon')), 'hocon')
+    travis_version, travis_dev = _grep_version([join(primary_suite.vc_dir, '.travis.yml')], 'TravisCI')
 
     if hocon_version != travis_version or hocon_dev != travis_dev:
         versions_ok = False
@@ -396,16 +387,6 @@ class BootstrapTest:
                     out = None
                 run_vm(self.args + ['-XX:+UseJVMCICompiler'] + _remove_empty_entries(extraVMarguments) + ['-XX:-TieredCompilation', '-XX:+BootstrapJVMCI', '-version'], out=out)
 
-class MicrobenchRun:
-    def __init__(self, name, args, tags):
-        self.name = name
-        self.args = args
-        self.tags = tags
-
-    def run(self, tasks, extraVMarguments=None):
-        with Task(self.name + ': hosted-product ', tasks, tags=self.tags) as t:
-            if t: mx_microbench.get_microbenchmark_executor().microbench(_remove_empty_entries(extraVMarguments) + ['--', '-foe', 'true'] + self.args)
-
 class GraalTags:
     bootstrap = ['bootstrap', 'fulltest']
     bootstraplite = ['bootstraplite', 'bootstrap', 'fulltest']
@@ -443,13 +424,28 @@ def _gate_java_benchmark(args, successRe):
     if not re.search(successRe, out.data, re.MULTILINE):
         mx.abort('Could not find benchmark success pattern: ' + successRe)
 
+def _is_batik_supported(jdk):
+    """
+    Determines if Batik runs on the given jdk. Batik's JPEGRegistryEntry contains a reference
+    to TruncatedFileException, which is specific to the Sun/Oracle JDK. On a different JDK,
+    this results in a NoClassDefFoundError: com/sun/image/codec/jpeg/TruncatedFileException
+    """
+    try:
+        subprocess.check_output([jdk.javap, 'com.sun.image.codec.jpeg.TruncatedFileException'])
+        return True
+    except subprocess.CalledProcessError:
+        mx.warn('Batik uses Sun internal class com.sun.image.codec.jpeg.TruncatedFileException which is not present in ' + jdk.home)
+        return False
+
 def _gate_dacapo(name, iterations, extraVMarguments=None):
-    vmargs = ['-Xms2g', '-XX:+UseSerialGC', '-XX:-UseCompressedOops', '-Djava.net.preferIPv4Stack=true', '-Dgraal.ExitVMOnException=true'] + _remove_empty_entries(extraVMarguments)
+    vmargs = ['-Xms2g', '-XX:+UseSerialGC', '-XX:-UseCompressedOops', '-Djava.net.preferIPv4Stack=true', '-Dgraal.CompilationFailureAction=ExitVM'] + _remove_empty_entries(extraVMarguments)
     dacapoJar = mx.library('DACAPO').get_path(True)
+    if name == 'batik' and not _is_batik_supported(jdk):
+        return
     _gate_java_benchmark(vmargs + ['-jar', dacapoJar, name, '-n', str(iterations)], r'^===== DaCapo 9\.12 ([a-zA-Z0-9_]+) PASSED in ([0-9]+) msec =====')
 
 def _gate_scala_dacapo(name, iterations, extraVMarguments=None):
-    vmargs = ['-Xms2g', '-XX:+UseSerialGC', '-XX:-UseCompressedOops', '-Dgraal.ExitVMOnException=true'] + _remove_empty_entries(extraVMarguments)
+    vmargs = ['-Xms2g', '-XX:+UseSerialGC', '-XX:-UseCompressedOops', '-Dgraal.CompilationFailureAction=ExitVM'] + _remove_empty_entries(extraVMarguments)
     scalaDacapoJar = mx.library('DACAPO_SCALA').get_path(True)
     _gate_java_benchmark(vmargs + ['-jar', scalaDacapoJar, name, '-n', str(iterations)], r'^===== DaCapo 0\.1\.0(-SNAPSHOT)? ([a-zA-Z0-9_]+) PASSED in ([0-9]+) msec =====')
 
@@ -460,6 +456,9 @@ def jvmci_ci_version_gate_runner(tasks):
         if t: verify_jvmci_ci_versions([])
 
 def compiler_gate_runner(suites, unit_test_runs, bootstrap_tests, tasks, extraVMarguments=None):
+    if jdk.javaCompliance >= '9':
+        with Task('JDK9_java_base_test', tasks, tags=GraalTags.test) as t:
+            if t: java_base_unittest(_remove_empty_entries(extraVMarguments))
 
     # Run unit tests in hosted mode
     for r in unit_test_runs:
@@ -469,7 +468,7 @@ def compiler_gate_runner(suites, unit_test_runs, bootstrap_tests, tasks, extraVM
     with Task('CTW:hosted', tasks, tags=GraalTags.ctw) as t:
         if t:
             ctw([
-                    '--ctwopts', 'Inline=false ExitVMOnException=true', '-esa', '-XX:-UseJVMCICompiler', '-XX:+EnableJVMCI',
+                    '--ctwopts', 'Inline=false CompilationFailureAction=ExitVM', '-esa', '-XX:-UseJVMCICompiler', '-XX:+EnableJVMCI',
                     '-DCompileTheWorld.MultiThreaded=true', '-Dgraal.InlineDuringParsing=false',
                     '-DCompileTheWorld.Verbose=false', '-XX:ReservedCodeCacheSize=300m',
                 ], _remove_empty_entries(extraVMarguments))
@@ -515,7 +514,7 @@ def compiler_gate_runner(suites, unit_test_runs, bootstrap_tests, tasks, extraVM
 
     # ensure -Xbatch still works
     with Task('DaCapo_pmd:BatchMode', tasks, tags=GraalTags.test) as t:
-        if t: _gate_dacapo('pmd', 1, _remove_empty_entries(extraVMarguments) + ['-XX:+UseJVMCICompiler', '-Xbatch', '-Dgraal.ForceDebugEnable=true'])
+        if t: _gate_dacapo('pmd', 1, _remove_empty_entries(extraVMarguments) + ['-XX:+UseJVMCICompiler', '-Xbatch'])
 
     # ensure benchmark counters still work
     with Task('DaCapo_pmd:BenchmarkCounters', tasks, tags=GraalTags.test) as t:
@@ -533,7 +532,7 @@ _registers = 'o0,o1,o2,o3,f8,f9,d32,d34' if mx.get_arch() == 'sparcv9' else 'rbx
 
 _defaultFlags = ['-Dgraal.CompilationWatchDogStartDelay=60.0D']
 _assertionFlags = ['-esa']
-_graalErrorFlags = ['-Dgraal.ExitVMOnException=true']
+_graalErrorFlags = ['-Dgraal.CompilationFailureAction=ExitVM']
 _graalEconomyFlags = ['-Dgraal.CompilerConfiguration=economy']
 _verificationFlags = ['-Dgraal.VerifyGraalGraphs=true', '-Dgraal.VerifyGraalGraphEdges=true', '-Dgraal.VerifyGraalPhasesSize=true', '-Dgraal.VerifyPhases=true']
 _coopFlags = ['-XX:-UseCompressedOops']
@@ -844,18 +843,58 @@ def sl(args):
     mx.get_opts().jdk = 'jvmci'
     mx_truffle.sl(args)
 
+def java_base_unittest(args):
+    """tests whether graal compiler runs on JDK9 with limited set of modules"""
+    jlink = mx.exe_suffix(join(jdk.home, 'bin', 'jlink'))
+    if not exists(jlink):
+        raise mx.JDKConfigException('jlink tool does not exist: ' + jlink)
+    basejdk_dir = join(_suite.get_output_root(), 'jdkbase')
+    basemodules = 'java.base,jdk.internal.vm.ci,jdk.unsupported,java.management,jdk.management'
+    if exists(basejdk_dir):
+        shutil.rmtree(basejdk_dir)
+    mx.run([jlink, '--output', basejdk_dir, '--add-modules', basemodules, '--module-path', join(jdk.home, 'jmods')])
+    jdwp = mx.add_lib_suffix(mx.add_lib_prefix('jdwp'))
+    shutil.copy(join(jdk.home, 'lib', jdwp), join(basejdk_dir, 'lib', jdwp))
+    dt_socket = mx.add_lib_suffix(mx.add_lib_prefix('dt_socket'))
+    shutil.copy(join(jdk.home, 'lib', dt_socket), join(basejdk_dir, 'lib', dt_socket))
+
+    if not args:
+        args = []
+
+    fakeJavac = join(basejdk_dir, 'bin', 'javac')
+    open(fakeJavac, 'a').close()
+
+    basejdk = mx.JDKConfig(basejdk_dir)
+    savedJava = jdk.java
+    try:
+        jdk.java = basejdk.java
+        if mx_gate.Task.verbose:
+            extra_args = ['--verbose', '--enable-timing']
+        else:
+            extra_args = []
+        mx_unittest.unittest(['--suite', 'compiler', '--fail-fast'] + extra_args + args)
+    finally:
+        jdk.java = savedJava
+
+def microbench(*args):
+    mx.abort("`mx microbench` is deprecated.\n" +
+             "Use `mx benchmark jmh-whitebox:*` and `mx benchmark jmh-dist:*` instead!")
+
 mx.update_commands(_suite, {
     'sl' : [sl, '[SL args|@VM options]'],
     'vm': [run_vm, '[-options] class [args...]'],
     'ctw': [ctw, '[-vmoptions|noinline|nocomplex|full]'],
     'nodecostdump' : [_nodeCostDump, ''],
     'verify_jvmci_ci_versions': [verify_jvmci_ci_versions, ''],
+    'java_base_unittest' : [java_base_unittest, 'Runs unittest on JDK9 java.base "only" module(s)'],
+    'microbench': [microbench, ''],
 })
 
 def mx_post_parse_cmd_line(opts):
     mx.add_ide_envvar('JVMCI_VERSION_CHECK')
     for dist in _suite.dists:
         dist.set_archiveparticipant(GraalArchiveParticipant(dist, isTest=dist.name.endswith('_TEST')))
+    add_bootclasspath_append(mx.distribution('sdk:GRAAL_SDK'))
     add_bootclasspath_append(mx.distribution('truffle:TRUFFLE_API'))
     global _vm_prefix
     _vm_prefix = opts.vm_prefix

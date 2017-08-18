@@ -29,12 +29,12 @@ import static org.graalvm.compiler.replacements.SnippetTemplate.DEFAULT_REPLACER
 import java.lang.reflect.Field;
 import java.util.Arrays;
 
-import org.graalvm.api.word.LocationIdentity;
 import org.graalvm.compiler.api.replacements.Fold;
 import org.graalvm.compiler.api.replacements.Snippet;
 import org.graalvm.compiler.api.replacements.Snippet.ConstantParameter;
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
 import org.graalvm.compiler.core.common.type.StampFactory;
+import org.graalvm.compiler.debug.DebugHandlersFactory;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.graph.NodeClass;
 import org.graalvm.compiler.nodeinfo.NodeInfo;
@@ -50,6 +50,7 @@ import org.graalvm.compiler.replacements.SnippetTemplate.AbstractTemplates;
 import org.graalvm.compiler.replacements.SnippetTemplate.Arguments;
 import org.graalvm.compiler.replacements.SnippetTemplate.SnippetInfo;
 import org.graalvm.compiler.word.ObjectAccess;
+import org.graalvm.word.LocationIdentity;
 
 import jdk.vm.ci.code.TargetDescription;
 import sun.misc.Unsafe;
@@ -145,8 +146,8 @@ public class SnippetCounterNode extends FixedWithNextNode implements Lowerable {
 
             private final SnippetInfo add = snippet(SnippetCounterSnippets.class, "add", SNIPPET_COUNTER_LOCATION);
 
-            Templates(OptionValues options, Providers providers, SnippetReflectionProvider snippetReflection, TargetDescription target) {
-                super(options, providers, snippetReflection, target);
+            Templates(OptionValues options, Iterable<DebugHandlersFactory> factories, Providers providers, SnippetReflectionProvider snippetReflection, TargetDescription target) {
+                super(options, factories, providers, snippetReflection, target);
             }
 
             public void lower(SnippetCounterNode counter, LoweringTool tool) {
@@ -155,7 +156,7 @@ public class SnippetCounterNode extends FixedWithNextNode implements Lowerable {
                 args.addConst("counter", counter.getCounter());
                 args.add("increment", counter.getIncrement());
 
-                template(args).instantiate(providers.getMetaAccess(), counter, DEFAULT_REPLACER, args);
+                template(counter.getDebug(), args).instantiate(providers.getMetaAccess(), counter, DEFAULT_REPLACER, args);
             }
         }
     }

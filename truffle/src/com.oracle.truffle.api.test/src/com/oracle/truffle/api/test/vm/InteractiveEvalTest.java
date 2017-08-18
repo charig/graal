@@ -34,6 +34,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.Env;
@@ -164,11 +165,6 @@ public class InteractiveEvalTest {
         }
 
         @Override
-        protected Object findExportedSymbol(InteractiveContext context, String globalName, boolean onlyExplicit) {
-            return null;
-        }
-
-        @Override
         protected Object getLanguageGlobal(InteractiveContext context) {
             return null;
         }
@@ -198,12 +194,17 @@ public class InteractiveEvalTest {
                     Object value = ic.getValue();
                     if (code.isInteractive()) {
                         try {
-                            ic.env.out().write(("\"" + value + "\"").getBytes(StandardCharsets.UTF_8));
+                            write(ic, value);
                         } catch (IOException ioex) {
                             return ioex;
                         }
                     }
                     return value;
+                }
+
+                @TruffleBoundary
+                private void write(InteractiveContext ic, Object value) throws IOException {
+                    ic.env.out().write(("\"" + value + "\"").getBytes(StandardCharsets.UTF_8));
                 }
             });
         }
@@ -211,11 +212,6 @@ public class InteractiveEvalTest {
         @Override
         protected boolean isVisible(InteractiveContext context, Object value) {
             return false;
-        }
-
-        @Override
-        protected Object findExportedSymbol(InteractiveContext context, String globalName, boolean onlyExplicit) {
-            return null;
         }
 
         @Override

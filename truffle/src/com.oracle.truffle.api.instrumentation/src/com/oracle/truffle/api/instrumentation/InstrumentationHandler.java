@@ -44,7 +44,10 @@ import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReferenceArray;
 
-import com.oracle.truffle.api.nodes.LanguageInfo;
+import org.graalvm.options.OptionDescriptor;
+import org.graalvm.options.OptionDescriptors;
+import org.graalvm.options.OptionValues;
+
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleOptions;
 import com.oracle.truffle.api.impl.Accessor;
@@ -53,6 +56,7 @@ import com.oracle.truffle.api.impl.DispatchOutputStream;
 import com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode;
 import com.oracle.truffle.api.instrumentation.ProbeNode.EventChainNode;
 import com.oracle.truffle.api.instrumentation.TruffleInstrument.Env;
+import com.oracle.truffle.api.nodes.LanguageInfo;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.NodeUtil;
 import com.oracle.truffle.api.nodes.NodeVisitor;
@@ -83,12 +87,14 @@ public final class InstrumentationHandler {
 
     private final Collection<RootNode> loadedRoots = new WeakAsyncList<>(256);
     private final Collection<RootNode> executedRoots = new WeakAsyncList<>(64);
+    private final Collection<AllocationReporter> allocationReporters = new WeakAsyncList<>(16);
 
     private final Collection<EventBinding<?>> executionBindings = new EventBindingList(8);
     private final Collection<EventBinding<?>> sourceSectionBindings = new EventBindingList(8);
     private final Collection<EventBinding<?>> sourceBindings = new EventBindingList(8);
     private final Collection<EventBinding<?>> outputStdBindings = new EventBindingList(1);
     private final Collection<EventBinding<?>> outputErrBindings = new EventBindingList(1);
+    private final Collection<EventBinding<?>> allocationBindings = new EventBindingList(2);
 
     /*
      * Fast lookup of instrumenter instances based on a key provided by the accessor.
@@ -100,11 +106,14 @@ public final class InstrumentationHandler {
     private final InputStream in;
     private final Map<Class<?>, Set<Class<?>>> cachedProvidedTags = new ConcurrentHashMap<>();
 
+    private final EngineInstrumenter engineInstrumenter;
+
     private InstrumentationHandler(Object sourceVM, DispatchOutputStream out, DispatchOutputStream err, InputStream in) {
         this.sourceVM = sourceVM;
         this.out = out;
         this.err = err;
         this.in = in;
+        this.engineInstrumenter = new EngineInstrumenter();
     }
 
     Object getSourceVM() {
@@ -145,7 +154,7 @@ public final class InstrumentationHandler {
 
         // fast path no bindings attached
         if (!sourceSectionBindings.isEmpty()) {
-            visitRoot(root, new NotifyLoadedListenerVisitor(sourceSectionBindings));
+            visitRoot(root, root, new NotifyLoadedListenerVisitor(sourceSectionBindings), false);
         }
 
     }
@@ -162,11 +171,34 @@ public final class InstrumentationHandler {
             return;
         }
 
-        visitRoot(root, new InsertWrappersVisitor(executionBindings));
+        visitRoot(root, root, new InsertWrappersVisitor(executionBindings), false);
     }
 
-    void addInstrument(Object vmObject, Class<?> clazz, String[] expectedServices) {
-        addInstrumenter(vmObject, new InstrumentClientInstrumenter(vmObject, clazz, out, err, in), expectedServices);
+    void initializeInstrument(Object vmObject, Class<?> instrumentClass) {
+        Env env = new Env(vmObject, out, err, in);
+        env.instrumenter = new InstrumentClientInstrumenter(env, instrumentClass);
+
+        if (TRACE) {
+            trace("Initialize instrument class %s %n", instrumentClass);
+        }
+        try {
+            env.instrumenter.instrument = (TruffleInstrument) instrumentClass.newInstance();
+        } catch (InstantiationException | IllegalAccessException e) {
+            failInstrumentInitialization(env, String.format("Failed to create new instrumenter class %s", instrumentClass.getName()), e);
+            return;
+        }
+
+        if (TRACE) {
+            trace("Initialized instrument %s class %s %n", env.instrumenter.instrument, instrumentClass);
+        }
+
+        addInstrumenter(vmObject, env.instrumenter);
+    }
+
+    void createInstrument(Object vmObject, String[] expectedServices, OptionValues optionValues) {
+        InstrumentClientInstrumenter instrumenter = ((InstrumentClientInstrumenter) instrumenterMap.get(vmObject));
+        instrumenter.env.options = optionValues;
+        instrumenter.create(expectedServices);
     }
 
     void disposeInstrumenter(Object key, boolean cleanupRequired) {
@@ -293,6 +325,24 @@ public final class InstrumentationHandler {
         return binding;
     }
 
+    private <T extends AllocationListener> EventBinding<T> addAllocationBinding(EventBinding<T> binding) {
+        if (TRACE) {
+            trace("BEGIN: Adding allocation binding %s%n", binding.getElement());
+        }
+
+        this.allocationBindings.add(binding);
+        for (AllocationReporter allocationReporter : allocationReporters) {
+            if (binding.getAllocationFilter().contains(allocationReporter.language)) {
+                allocationReporter.addListener(binding.getElement());
+            }
+        }
+
+        if (TRACE) {
+            trace("END: Added allocation binding %s%n", binding.getElement());
+        }
+        return binding;
+    }
+
     /**
      * Initializes sources and sourcesList by populating them from loadedRoots.
      */
@@ -317,7 +367,7 @@ public final class InstrumentationHandler {
 
     private void visitRoots(Collection<RootNode> roots, AbstractNodeVisitor addBindingsVisitor) {
         for (RootNode root : roots) {
-            visitRoot(root, addBindingsVisitor);
+            visitRoot(root, root, addBindingsVisitor, false);
         }
     }
 
@@ -335,6 +385,13 @@ public final class InstrumentationHandler {
                     AccessorInstrumentHandler.engineAccess().detachOutputConsumer(err, (OutputStream) elm);
                 } else if (outputStdBindings.contains(binding)) {
                     AccessorInstrumentHandler.engineAccess().detachOutputConsumer(out, (OutputStream) elm);
+                }
+            } else if (elm instanceof AllocationListener) {
+                AllocationListener l = (AllocationListener) elm;
+                for (AllocationReporter allocationReporter : allocationReporters) {
+                    if (binding.getAllocationFilter().contains(allocationReporter.language)) {
+                        allocationReporter.removeListener(l);
+                    }
                 }
             }
         }
@@ -383,6 +440,15 @@ public final class InstrumentationHandler {
         return root;
     }
 
+    public void onNodeInserted(RootNode rootNode, Node tree) {
+        if (!sourceSectionBindings.isEmpty()) {
+            visitRoot(rootNode, tree, new NotifyLoadedListenerVisitor(sourceSectionBindings), true);
+        }
+        if (!executionBindings.isEmpty()) {
+            visitRoot(rootNode, tree, new InsertWrappersVisitor(executionBindings), true);
+        }
+    }
+
     private static void notifySourceBindingsLoaded(Collection<EventBinding<?>> bindings, Source source) {
         for (EventBinding<?> binding : bindings) {
             notifySourceBindingLoaded(binding, source);
@@ -416,12 +482,11 @@ public final class InstrumentationHandler {
         }
     }
 
-    private void addInstrumenter(Object key, AbstractInstrumenter instrumenter, String[] expectedServices) throws AssertionError {
+    private void addInstrumenter(Object key, AbstractInstrumenter instrumenter) throws AssertionError {
         Object previousKey = instrumenterMap.putIfAbsent(key, instrumenter);
         if (previousKey != null) {
             throw new AssertionError("Instrumenter already present.");
         }
-        instrumenter.initialize(expectedServices);
     }
 
     private static Collection<EventBinding<?>> filterBindingsForInstrumenter(Collection<EventBinding<?>> bindings, AbstractInstrumenter instrumenter) {
@@ -519,6 +584,10 @@ public final class InstrumentationHandler {
         return addOutputBinding(new EventBinding<>(instrumenter, null, stream, false), errorOutput);
     }
 
+    private <T extends AllocationListener> EventBinding<T> attachAllocationListener(AbstractInstrumenter instrumenter, AllocationEventFilter filter, T listener) {
+        return addAllocationBinding(new EventBinding<>(instrumenter, filter, listener, false));
+    }
+
     Set<Class<?>> getProvidedTags(LanguageInfo language) {
         Nodes nodesAccess = AccessorInstrumentHandler.nodesAccess();
         TruffleLanguage<?> lang = nodesAccess.getLanguageSpi(language);
@@ -536,11 +605,11 @@ public final class InstrumentationHandler {
         return tags;
     }
 
-    Set<Class<?>> getProvidedTags(RootNode root) {
-        return getProvidedTags(root.getLanguageInfo());
+    Set<Class<?>> getProvidedTags(Node root) {
+        return getProvidedTags(root.getRootNode().getLanguageInfo());
     }
 
-    private static boolean isInstrumentableNode(Node node, SourceSection sourceSection) {
+    static boolean isInstrumentableNode(Node node, SourceSection sourceSection) {
         return !(node instanceof WrapperNode) && !(node instanceof RootNode) && sourceSection != null;
     }
 
@@ -549,23 +618,36 @@ public final class InstrumentationHandler {
         out.printf(message, args);
     }
 
-    private void visitRoot(final RootNode root, final AbstractNodeVisitor visitor) {
+    private void visitRoot(RootNode root, final Node node, final AbstractNodeVisitor visitor, boolean forceRootBitComputation) {
         if (TRACE) {
             trace("BEGIN: Visit root %s for %s%n", root.toString(), visitor);
         }
 
         visitor.root = root;
         visitor.providedTags = getProvidedTags(root);
+        visitor.rootSourceSection = root.getSourceSection();
+        visitor.rootBits = RootNodeBits.get(visitor.root);
 
-        if (visitor.shouldVisit()) {
+        if (visitor.shouldVisit() || forceRootBitComputation) {
+            if (forceRootBitComputation) {
+                visitor.computingRootNodeBits = RootNodeBits.isUninitialized(visitor.rootBits) ? RootNodeBits.getAll() : visitor.rootBits;
+            } else if (RootNodeBits.isUninitialized(visitor.rootBits)) {
+                visitor.computingRootNodeBits = RootNodeBits.getAll();
+            }
+
             if (TRACE) {
                 trace("BEGIN: Traverse root %s for %s%n", root.toString(), visitor);
             }
-            root.accept(visitor);
+            node.accept(visitor);
             if (TRACE) {
                 trace("END: Traverse root %s for %s%n", root.toString(), visitor);
             }
+
+            if (!RootNodeBits.isUninitialized(visitor.computingRootNodeBits)) {
+                RootNodeBits.set(visitor.root, visitor.computingRootNodeBits);
+            }
         }
+
         if (TRACE) {
             trace("END: Visited root %s for %s%n", root.toString(), visitor);
         }
@@ -619,12 +701,63 @@ public final class InstrumentationHandler {
         return value == null ? null : value.lookup(this, type);
     }
 
+    private AllocationReporter getAllocationReporter(LanguageInfo info) {
+        AllocationReporter allocationReporter = new AllocationReporter(info);
+        allocationReporters.add(allocationReporter);
+        for (EventBinding<?> binding : allocationBindings) {
+            if (binding.getAllocationFilter().contains(info)) {
+                allocationReporter.addListener((AllocationListener) binding.getElement());
+            }
+        }
+        return allocationReporter;
+    }
+
+    static void failInstrumentInitialization(Env env, String message, Throwable t) {
+        Exception exception = new Exception(message, t);
+        PrintStream stream = new PrintStream(env.err());
+        exception.printStackTrace(stream);
+    }
+
     private abstract static class AbstractNodeVisitor implements NodeVisitor {
 
         RootNode root;
+        SourceSection rootSourceSection;
         Set<Class<?>> providedTags;
 
+        /* cached root bits read from the root node. value is reliable. */
+        int rootBits;
+        /* temporary field for currently computing root bits. value is not reliable. */
+        int computingRootNodeBits;
+
         abstract boolean shouldVisit();
+
+        final void computeRootBits(SourceSection sourceSection) {
+            int bits = computingRootNodeBits;
+            if (RootNodeBits.isUninitialized(bits)) {
+                return;
+            }
+
+            if (sourceSection != null) {
+                if (RootNodeBits.isNoSourceSection(bits)) {
+                    bits = RootNodeBits.setHasSourceSection(bits);
+                }
+                if (rootSourceSection != null) {
+                    if (RootNodeBits.isSourceSectionsHierachical(bits)) {
+                        if (sourceSection.getCharIndex() < rootSourceSection.getCharIndex() //
+                                        || sourceSection.getCharEndIndex() > rootSourceSection.getCharEndIndex()) {
+                            bits = RootNodeBits.setSourceSectionsUnstructured(bits);
+                        }
+                    }
+                    if (RootNodeBits.isSameSource(bits) && rootSourceSection.getSource() != sourceSection.getSource()) {
+                        bits = RootNodeBits.setHasDifferentSource(bits);
+                    }
+                } else {
+                    bits = RootNodeBits.setSourceSectionsUnstructured(bits);
+                    bits = RootNodeBits.setHasDifferentSource(bits);
+                }
+            }
+            computingRootNodeBits = bits;
+        }
 
     }
 
@@ -638,12 +771,16 @@ public final class InstrumentationHandler {
 
         @Override
         boolean shouldVisit() {
-            return binding.isInstrumentedRoot(providedTags, root, root.getSourceSection());
+            RootNode localRoot = root;
+            SourceSection localRootSourceSection = rootSourceSection;
+            int localRootBits = rootBits;
+            return binding.isInstrumentedRoot(providedTags, localRoot, localRootSourceSection, localRootBits);
         }
 
         public final boolean visit(Node node) {
             SourceSection sourceSection = node.getSourceSection();
             if (isInstrumentableNode(node, sourceSection)) {
+                computeRootBits(sourceSection);
                 if (binding.isInstrumentedLeaf(providedTags, node, sourceSection)) {
                     if (TRACE) {
                         traceFilterCheck("hit", providedTags, binding, node, sourceSection);
@@ -687,14 +824,12 @@ public final class InstrumentationHandler {
             if (bindings.isEmpty()) {
                 return false;
             }
-            final RootNode localRoot = root;
-            if (localRoot == null) {
-                return false;
-            }
-            SourceSection sourceSection = localRoot.getSourceSection();
+            RootNode localRoot = root;
+            SourceSection localRootSourceSection = rootSourceSection;
+            int localRootBits = rootBits;
 
             for (EventBinding<?> binding : bindings) {
-                if (binding.isInstrumentedRoot(providedTags, localRoot, sourceSection)) {
+                if (binding.isInstrumentedRoot(providedTags, localRoot, localRootSourceSection, localRootBits)) {
                     return true;
                 }
             }
@@ -704,6 +839,7 @@ public final class InstrumentationHandler {
         public final boolean visit(Node node) {
             SourceSection sourceSection = node.getSourceSection();
             if (isInstrumentableNode(node, sourceSection)) {
+                computeRootBits(sourceSection);
                 // no locking required for these atomic reference arrays
                 for (EventBinding<?> binding : bindings) {
                     if (binding.isInstrumentedFull(providedTags, root, node, sourceSection)) {
@@ -815,9 +951,9 @@ public final class InstrumentationHandler {
         private TruffleInstrument instrument;
         private final Env env;
 
-        InstrumentClientInstrumenter(Object vm, Class<?> instrumentClass, OutputStream out, OutputStream err, InputStream in) {
+        InstrumentClientInstrumenter(Env env, Class<?> instrumentClass) {
             this.instrumentClass = instrumentClass;
-            this.env = new Env(vm, this, out, err, in);
+            this.env = env;
         }
 
         @Override
@@ -852,17 +988,9 @@ public final class InstrumentationHandler {
             return env;
         }
 
-        @Override
-        void initialize(String[] expectedServices) {
+        void create(String[] expectedServices) {
             if (TRACE) {
-                trace("Initialize instrument %s class %s %n", instrument, instrumentClass);
-            }
-            assert instrument == null;
-            try {
-                this.instrument = (TruffleInstrument) instrumentClass.newInstance();
-            } catch (InstantiationException | IllegalAccessException e) {
-                failInstrumentInitialization(String.format("Failed to create new instrumenter class %s", instrumentClass.getName()), e);
-                return;
+                trace("Create instrument %s class %s %n", instrument, instrumentClass);
             }
             try {
                 services = env.onCreate(instrument);
@@ -870,11 +998,11 @@ public final class InstrumentationHandler {
                     checkServices(expectedServices);
                 }
             } catch (Throwable e) {
-                failInstrumentInitialization(String.format("Failed calling onCreate of instrument class %s", instrumentClass.getName()), e);
+                failInstrumentInitialization(env, String.format("Failed calling onCreate of instrument class %s", instrumentClass.getName()), e);
                 return;
             }
             if (TRACE) {
-                trace("Initialized instrument %s class %s %n", instrument, instrumentClass);
+                trace("Created instrument %s class %s %n", instrument, instrumentClass);
             }
         }
 
@@ -885,7 +1013,7 @@ public final class InstrumentationHandler {
                         continue LOOP;
                     }
                 }
-                failInstrumentInitialization(String.format("%s declares service %s but doesn't register it", instrumentClass.getName(), name), null);
+                failInstrumentInitialization(env, String.format("%s declares service %s but doesn't register it", instrumentClass.getName(), name), null);
             }
             return true;
         }
@@ -894,7 +1022,7 @@ public final class InstrumentationHandler {
             if (type == null) {
                 return false;
             }
-            if (type.getName().equals(name)) {
+            if (type.getName().equals(name) || (type.getCanonicalName() != null && type.getCanonicalName().equals(name))) {
                 return true;
             }
             if (findType(name, type.getSuperclass())) {
@@ -906,12 +1034,6 @@ public final class InstrumentationHandler {
                 }
             }
             return false;
-        }
-
-        private void failInstrumentInitialization(String message, Throwable t) {
-            Exception exception = new Exception(message, t);
-            PrintStream stream = new PrintStream(env.err());
-            exception.printStackTrace(stream);
         }
 
         boolean isInitialized() {
@@ -939,6 +1061,45 @@ public final class InstrumentationHandler {
             return null;
         }
 
+    }
+
+    /**
+     * Provider of instrumentation services for {@linkplain TruffleLanguage language
+     * implementations}.
+     */
+    final class EngineInstrumenter extends AbstractInstrumenter {
+
+        @Override
+        void dispose() {
+        }
+
+        @Override
+        <T> T lookup(InstrumentationHandler handler, Class<T> type) {
+            return null;
+        }
+
+        @Override
+        boolean isInstrumentableRoot(RootNode rootNode) {
+            return true;
+        }
+
+        @Override
+        boolean isInstrumentableSource(Source source) {
+            return true;
+        }
+
+        @Override
+        void verifyFilter(SourceSectionFilter filter) {
+        }
+
+        @Override
+        public Set<Class<?>> queryTags(Node node) {
+            return queryTagsImpl(node, null);
+        }
+        
+        public boolean isTaggedWith(Node node, Class<?> tag) {
+          return AccessorInstrumentHandler.nodesAccess().isTaggedWith(node, tag);
+        }
     }
 
     /**
@@ -1010,11 +1171,6 @@ public final class InstrumentationHandler {
         }
 
         @Override
-        void initialize(String[] expectedServices) {
-            // nothing to do
-        }
-
-        @Override
         void dispose() {
             // nothing to do
         }
@@ -1031,8 +1187,6 @@ public final class InstrumentationHandler {
      * privileges may vary.
      */
     abstract class AbstractInstrumenter extends Instrumenter {
-
-        abstract void initialize(String[] expectedServices);
 
         abstract void dispose();
 
@@ -1097,6 +1251,11 @@ public final class InstrumentationHandler {
         public <T extends LoadSourceSectionListener> EventBinding<T> attachLoadSourceSectionListener(SourceSectionFilter filter, T listener, boolean notifyLoaded) {
             verifyFilter(filter);
             return InstrumentationHandler.this.attachSourceSectionListener(this, filter, listener, notifyLoaded);
+        }
+
+        @Override
+        public <T extends AllocationListener> EventBinding<T> attachAllocationListener(AllocationEventFilter filter, T listener) {
+            return InstrumentationHandler.this.attachAllocationListener(this, filter, listener);
         }
 
         @Override
@@ -1339,9 +1498,17 @@ public final class InstrumentationHandler {
             return ACCESSOR.engineSupport();
         }
 
+        static Accessor.InteropSupport interopAccess() {
+            return ACCESSOR.interopSupport();
+        }
+
         @Override
         protected InstrumentSupport instrumentSupport() {
             return new InstrumentImpl();
+        }
+
+        protected boolean isTruffleObject(Object value) {
+            return interopSupport().isTruffleObject(value);
         }
 
         static final class InstrumentImpl extends InstrumentSupport {
@@ -1352,8 +1519,44 @@ public final class InstrumentationHandler {
             }
 
             @Override
-            public void addInstrument(Object instrumentationHandler, Object key, Class<?> instrumentClass, String[] expectedServices) {
-                ((InstrumentationHandler) instrumentationHandler).addInstrument(key, instrumentClass, expectedServices);
+            public void initializeInstrument(Object instrumentationHandler, Object key, Class<?> instrumentClass) {
+                ((InstrumentationHandler) instrumentationHandler).initializeInstrument(key, instrumentClass);
+            }
+
+            @Override
+            public void createInstrument(Object instrumentationHandler, Object key, String[] expectedServices, OptionValues options) {
+                ((InstrumentationHandler) instrumentationHandler).createInstrument(key, expectedServices, options);
+            }
+
+            @Override
+            public Object getEngineInstrumenter(Object instrumentationHandler) {
+                return ((InstrumentationHandler) instrumentationHandler).engineInstrumenter;
+            }
+
+            @Override
+            public void onNodeInserted(RootNode rootNode, Node tree) {
+                InstrumentationHandler handler = getHandler(rootNode);
+                if (handler != null) {
+                    handler.onNodeInserted(rootNode, tree);
+                }
+            }
+
+            @Override
+            public OptionDescriptors describeOptions(Object instrumentationHandler, Object key, String requiredGroup) {
+                InstrumentClientInstrumenter instrumenter = (InstrumentClientInstrumenter) ((InstrumentationHandler) instrumentationHandler).instrumenterMap.get(key);
+                OptionDescriptors descriptors = instrumenter.instrument.getOptionDescriptors();
+                if (descriptors == null) {
+                    descriptors = OptionDescriptors.EMPTY;
+                }
+                String groupPlusDot = requiredGroup + ".";
+                for (OptionDescriptor descriptor : descriptors) {
+                    if (!descriptor.getName().equals(requiredGroup) && !descriptor.getName().startsWith(groupPlusDot)) {
+                        throw new IllegalArgumentException(String.format("Illegal option prefix in name '%s' specified for option described by instrument '%s'. " +
+                                        "The option prefix must match the id of the instrument '%s'.",
+                                        descriptor.getName(), instrumenter.instrument.getClass().getName(), requiredGroup));
+                    }
+                }
+                return descriptors;
             }
 
             @Override
@@ -1366,6 +1569,8 @@ public final class InstrumentationHandler {
                 InstrumentationHandler instrumentationHandler = (InstrumentationHandler) engineAccess().getInstrumentationHandler(languageShared);
                 Instrumenter instrumenter = instrumentationHandler.forLanguage(info);
                 collectTo.add(instrumenter);
+                AllocationReporter allocationReporter = instrumentationHandler.getAllocationReporter(info);
+                collectTo.add(allocationReporter);
             }
 
             @Override
@@ -1401,6 +1606,7 @@ public final class InstrumentationHandler {
                 }
                 return (InstrumentationHandler) engineAccess().getInstrumentationHandler(languageShared);
             }
+
         }
     }
 

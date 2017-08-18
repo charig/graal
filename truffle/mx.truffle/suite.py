@@ -1,6 +1,7 @@
 suite = {
-  "mxversion" : "5.70.0",
+  "mxversion" : "5.123.0",
   "name" : "truffle",
+  "sourceinprojectwhitelist" : [],
   "url" : "http://openjdk.java.net/projects/graal",
   "developer" : {
     "name" : "Truffle and Graal developers",
@@ -16,26 +17,31 @@ suite = {
   "repositories" : {
     "lafo-snapshots" : {
       "url" : "https://curio.ssw.jku.at/nexus/content/repositories/snapshots",
-      "licenses" : ["GPLv2-CPE", "UPL"]
+      "licenses" : ["GPLv2-CPE", "UPL", "BSD-new"]
     },
   },
   "defaultLicense" : "GPLv2-CPE",
+  "imports" : {
+    "suites": [
+      {
+        "name" : "sdk",
+        "subdir": True,
+        "urls" : [
+          {"url" : "https://curio.ssw.jku.at/nexus/content/repositories/snapshots", "kind" : "binary"},
+         ]
+      },
+    ]
+  },
   "libraries" : {
 
     # ------------- Libraries -------------
 
     "JLINE" : {
-      "urls" : [
-        "https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/jline-2.11.jar",
-        "https://search.maven.org/remotecontent?filepath=jline/jline/2.11/jline-2.11.jar",
-      ],
-      "sha1" : "9504d5e2da5d78237239c5226e8200ec21182040",
-      "sourceUrls" : ["https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/jline-2.11-sources.jar"],
-      "sourceSha1" : "ef2539b992e5605be966b6db7cfc83930f0da39b",
+      "sha1" : "fdedd5f2522122102f0b3db85fe7aa563a009926",
       "maven" : {
         "groupId" : "jline",
         "artifactId" : "jline",
-        "version" : "2.11",
+        "version" : "2.14.5",
       }
     },
 
@@ -73,7 +79,8 @@ suite = {
       "subDir" : "src",
       "sourceDirs" : ["src"],
       "dependencies" : [
-        "com.oracle.truffle.api.source"
+        "com.oracle.truffle.api.source",
+        "sdk:GRAAL_SDK",
       ],
       "uses" : [
         "com.oracle.truffle.api.TruffleRuntimeAccess",
@@ -103,10 +110,10 @@ suite = {
     "com.oracle.truffle.api.vm" : {
       "subDir" : "src",
       "sourceDirs" : ["src"],
-      "uses" : ["com.oracle.truffle.api.impl.TruffleLocator"],
+      "uses" : ["com.oracle.truffle.api.impl.TruffleLocator", "org.graalvm.polyglot.impl.AbstractPolyglotImpl",],
       "dependencies" : [
+        "sdk:GRAAL_SDK",
         "com.oracle.truffle.api.interop.java",
-        "com.oracle.truffle.api.profiles",
         "com.oracle.truffle.api.instrumentation",
       ],
       "exports" : [
@@ -141,14 +148,15 @@ suite = {
       "subDir" : "src",
       "sourceDirs" : ["src"],
       "dependencies" : [
-        "com.oracle.truffle.api",
+        "TRUFFLE_API",
         "mx:JMH_1_18",
       ],
       "imports" : ["jdk.internal.loader"],
       "checkstyle" : "com.oracle.truffle.dsl.processor",
       "javaCompliance" : "1.8",
       "findbugsIgnoresGenerated" : True,
-      "annotationProcessors" : ["mx:JMH_1_18"],
+      "isTestProject" : True,
+      "annotationProcessors" : ["mx:JMH_1_18", "TRUFFLE_DSL_PROCESSOR"],
       "workingSets" : "API,Truffle,Test",
       "jacoco" : "exclude",
     },
@@ -223,7 +231,10 @@ suite = {
     "com.oracle.truffle.api.interop" : {
       "subDir" : "src",
       "sourceDirs" : ["src"],
-      "dependencies" : ["com.oracle.truffle.api.dsl"],
+      "dependencies" : [
+        "com.oracle.truffle.api.dsl",
+        "com.oracle.truffle.api.profiles",
+      ],
       "annotationProcessors" : ["TRUFFLE_DSL_PROCESSOR_INTERNAL"],
       "exports" : [
         "<package-info>", # exports all packages containing package-info.java
@@ -264,6 +275,9 @@ suite = {
       "subDir" : "src",
       "sourceDirs" : ["src"],
       "dependencies" : ["com.oracle.truffle.api.vm", "com.oracle.truffle.api.metadata"],
+      "runtimeDeps" : [
+        "java.desktop"
+      ],
       "exports" : [
         "<package-info>", # exports all packages containing package-info.java
       ],
@@ -648,6 +662,7 @@ suite = {
         "com.oracle.truffle.api.object.dsl",
       ],
       "distDependencies" : [
+	    "sdk:GRAAL_SDK"
       ],
       "description" : """Truffle is a multi-language framework for executing dynamic languages
         that achieves high performance when combined with Graal.""",
@@ -701,7 +716,7 @@ suite = {
       "subDir" : "src",
       "javaCompliance" : "1.8",
       "dependencies" : ["com.oracle.truffle.dsl.processor"],
-      "distDependencies" : [],
+      "distDependencies" : ["sdk:GRAAL_SDK"],
       "maven" : False,
     },
 
@@ -710,7 +725,7 @@ suite = {
       "subDir" : "src",
       "javaCompliance" : "1.8",
       "dependencies" : ["com.oracle.truffle.dsl.processor", "com.oracle.truffle.dsl.processor.interop"],
-      "distDependencies" : [],
+      "distDependencies" : ["sdk:GRAAL_SDK"],
       "maven" : False,
     },
 

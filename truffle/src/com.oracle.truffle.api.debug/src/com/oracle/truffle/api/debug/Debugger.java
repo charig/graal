@@ -27,7 +27,9 @@ package com.oracle.truffle.api.debug;
 import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.TruffleLanguage;
@@ -44,6 +46,7 @@ import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.vm.PolyglotEngine;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Represents debugging related state of a {@link PolyglotEngine}.
@@ -70,19 +73,29 @@ import com.oracle.truffle.api.vm.PolyglotEngine;
  */
 public final class Debugger {
 
+    /**
+     * Name of a property that is fired when a list of breakpoints changes.
+     *
+     * @since 0.27
+     * @see #getBreakpoints()
+     * @see #addPropertyChangeListener(java.beans.PropertyChangeListener)
+     */
+    public static final String PROPERTY_BREAKPOINTS = "breakpoints";
     static final boolean TRACE = Boolean.getBoolean("truffle.debug.trace");
 
-    /*
-     * The engine with this debugger was created.
-     */
-    private final PolyglotEngine sourceVM;
     private final Env env;
+    final List<Object> propSupport = new CopyOnWriteArrayList<>();
     private final ObjectStructures.MessageNodes msgNodes;
+    private final Set<DebuggerSession> sessions = new HashSet<>();
+    private final List<Breakpoint> breakpoints = new ArrayList<>();
+    final Breakpoint alwaysHaltBreakpoint;
 
-    Debugger(PolyglotEngine sourceVM, Env env) {
+    Debugger(Env env) {
         this.env = env;
-        this.sourceVM = sourceVM;
         this.msgNodes = new ObjectStructures.MessageNodes();
+        SourceSectionFilter filter = SourceSectionFilter.newBuilder().tagIs(DebuggerTags.AlwaysHalt.class).build();
+        this.alwaysHaltBreakpoint = new Breakpoint(BreakpointLocation.ANY, filter, false);
+        this.alwaysHaltBreakpoint.setEnabled(true);
     }
 
     /**
@@ -95,7 +108,106 @@ public final class Debugger {
      * @since 0.17
      */
     public DebuggerSession startSession(SuspendedCallback callback) {
-        return new DebuggerSession(this, callback);
+        DebuggerSession session = new DebuggerSession(this, callback);
+        Breakpoint[] bpts;
+        synchronized (this) {
+            sessions.add(session);
+            bpts = breakpoints.toArray(new Breakpoint[]{});
+        }
+        for (Breakpoint b : bpts) {
+            session.install(b, true);
+        }
+        session.install(alwaysHaltBreakpoint, true);
+        return session;
+    }
+
+    void disposedSession(DebuggerSession session) {
+        synchronized (this) {
+            sessions.remove(session);
+            for (Breakpoint b : breakpoints) {
+                b.sessionClosed(session);
+            }
+        }
+    }
+
+    /**
+     * Adds a new breakpoint to this Debugger instance and makes it available in all its sessions.
+     * <p>
+     * The breakpoint suspends execution in all active {@link DebuggerSession sessions} by making a
+     * callback to the appropriate session {@link SuspendedCallback callback handler}, together with
+     * an event description that includes {@linkplain SuspendedEvent#getBreakpoints() which
+     * breakpoint(s)} were hit.
+     *
+     * @param breakpoint a new breakpoint
+     * @return the installed breakpoint
+     * @throws IllegalStateException if the session has been closed
+     *
+     * @since 0.27
+     */
+    public Breakpoint install(Breakpoint breakpoint) {
+        if (breakpoint.isDisposed()) {
+            throw new IllegalArgumentException("Cannot install breakpoint, it is already disposed.");
+        }
+        breakpoint.installGlobal(this);
+        DebuggerSession[] ds;
+        synchronized (this) {
+            this.breakpoints.add(breakpoint);
+            ds = sessions.toArray(new DebuggerSession[]{});
+        }
+        for (DebuggerSession s : ds) {
+            s.install(breakpoint, true);
+        }
+        BreakpointsPropertyChangeEvent.firePropertyChange(this, null, breakpoint);
+        if (Debugger.TRACE) {
+            trace("installed debugger breakpoint %s", breakpoint);
+        }
+        return breakpoint;
+    }
+
+    /**
+     * Returns all breakpoints {@link #install(com.oracle.truffle.api.debug.Breakpoint) installed}
+     * in this debugger instance, in the install order. The returned list contains a current
+     * snapshot of breakpoints, those that were {@link Breakpoint#dispose() disposed} are not
+     * included.
+     * <p>
+     * It's not possible to modify state of breakpoints returned from this list, or from the
+     * associated property change events, they are not {@link Breakpoint#isModifiable() modifiable}.
+     * An attempt to modify breakpoints state using any of their set method, or an attempt to
+     * dispose such breakpoints, fails with an {@link IllegalStateException}. Use the original
+     * installed breakpoint instance to change breakpoint state or dispose the breakpoint.
+     *
+     * @since 0.27
+     * @see DebuggerSession#getBreakpoints()
+     */
+    public List<Breakpoint> getBreakpoints() {
+        List<Breakpoint> bpts;
+        synchronized (this) {
+            bpts = new ArrayList<>(this.breakpoints.size());
+            for (Breakpoint b : this.breakpoints) {
+                bpts.add(b.getROWrapper());
+            }
+        }
+        return Collections.unmodifiableList(bpts);
+    }
+
+    /**
+     * For package access only, access under synchronized on this.
+     */
+    List<Breakpoint> getRawBreakpoints() {
+        return breakpoints;
+    }
+
+    void disposeBreakpoint(Breakpoint breakpoint) {
+        boolean removed;
+        synchronized (this) {
+            removed = breakpoints.remove(breakpoint);
+        }
+        if (removed) {
+            BreakpointsPropertyChangeEvent.firePropertyChange(this, breakpoint, null);
+        }
+        if (Debugger.TRACE) {
+            trace("disposed debugger breakpoint %s", breakpoint);
+        }
     }
 
     /**
@@ -116,8 +228,26 @@ public final class Debugger {
         return Collections.unmodifiableList(sources);
     }
 
-    PolyglotEngine getSourceVM() {
-        return sourceVM;
+    /**
+     * Add a property change listener that is notified when a property of this debugger changes.
+     *
+     * @since 0.27
+     * @see #PROPERTY_BREAKPOINTS
+     */
+    public void addPropertyChangeListener(java.beans.PropertyChangeListener listener) {
+        // using FQN to avoid mx to generate dependency on java.desktop module
+        propSupport.add(listener);
+    }
+
+    /**
+     * Remove a property change listener that is notified when state of this debugger changes.
+     *
+     * @since 0.27
+     * @see #addPropertyChangeListener(java.beans.PropertyChangeListener)
+     */
+    public void removePropertyChangeListener(java.beans.PropertyChangeListener listener) {
+        // using FQN to avoid mx to generate dependency on java.desktop module
+        propSupport.remove(listener);
     }
 
     Env getEnv() {
@@ -148,11 +278,7 @@ public final class Debugger {
      * @since 0.9
      */
     public static Debugger find(PolyglotEngine engine) {
-        return DebuggerInstrument.getDebugger(engine, new DebuggerInstrument.DebuggerFactory() {
-            public Debugger create(PolyglotEngine e, Env env) {
-                return new Debugger(e, env);
-            }
-        });
+        return DebuggerInstrument.getDebugger(engine);
     }
 
     /**
@@ -166,7 +292,7 @@ public final class Debugger {
      * @since 0.17
      */
     public static Debugger find(TruffleLanguage.Env env) {
-        return find((PolyglotEngine) ACCESSOR.findVM(env));
+        return env.lookup(env.getInstruments().get("debugger"), Debugger.class);
     }
 
     static final class AccessorDebug extends Accessor {
@@ -187,22 +313,23 @@ public final class Debugger {
         }
 
         /*
-         * TODO we should have a better way to publish services from instruments to languages.
-         */
-        protected Object findVM(com.oracle.truffle.api.TruffleLanguage.Env env) {
-            return nodes().getEngineObject(languageSupport().getLanguageInfo(env));
-        }
-
-        /*
          * TODO I initially moved this to TruffleInstrument.Env but decided against as a new API for
          * inline parsing might replace it.
          */
-        protected Object evalInContext(Object sourceVM, Node node, MaterializedFrame frame, String code) {
-            return languageSupport().evalInContext(sourceVM, code, node, frame);
+        protected Object evalInContext(Node node, MaterializedFrame frame, String code) {
+            return languageSupport().evalInContext(code, node, frame);
         }
 
     }
 
     static final AccessorDebug ACCESSOR = new AccessorDebug();
+
+    static {
+        DebuggerInstrument.setFactory(new DebuggerInstrument.DebuggerFactory() {
+            public Debugger create(Env env) {
+                return new Debugger(env);
+            }
+        });
+    }
 
 }

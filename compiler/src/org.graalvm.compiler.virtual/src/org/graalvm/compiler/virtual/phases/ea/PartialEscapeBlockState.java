@@ -24,10 +24,9 @@ package org.graalvm.compiler.virtual.phases.ea;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.nodes.FixedNode;
 import org.graalvm.compiler.nodes.FixedWithNextNode;
@@ -53,6 +52,19 @@ public abstract class PartialEscapeBlockState<T extends PartialEscapeBlockState<
      */
     private ObjectState[] objectStates;
 
+    public boolean contains(VirtualObjectNode value) {
+        for (ObjectState state : objectStates) {
+            if (state != null && state.isVirtual() && state.getEntries() != null) {
+                for (ValueNode entry : state.getEntries()) {
+                    if (entry == value) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
     private static class RefCount {
         private int refCount = 1;
     }
@@ -63,6 +75,7 @@ public abstract class PartialEscapeBlockState<T extends PartialEscapeBlockState<
     private RefCount arrayRefCount;
 
     private final OptionValues options;
+    private final DebugContext debug;
 
     /**
      * Final subclass of PartialEscapeBlockState, for performance and to make everything behave
@@ -70,8 +83,8 @@ public abstract class PartialEscapeBlockState<T extends PartialEscapeBlockState<
      */
     public static final class Final extends PartialEscapeBlockState<Final> {
 
-        public Final(OptionValues options) {
-            super(options);
+        public Final(OptionValues options, DebugContext debug) {
+            super(options, debug);
         }
 
         public Final(Final other) {
@@ -79,16 +92,18 @@ public abstract class PartialEscapeBlockState<T extends PartialEscapeBlockState<
         }
     }
 
-    protected PartialEscapeBlockState(OptionValues options) {
+    protected PartialEscapeBlockState(OptionValues options, DebugContext debug) {
         objectStates = EMPTY_ARRAY;
         arrayRefCount = new RefCount();
         this.options = options;
+        this.debug = debug;
     }
 
     protected PartialEscapeBlockState(PartialEscapeBlockState<T> other) {
         super(other);
         adoptAddObjectStates(other);
         options = other.options;
+        debug = other.debug;
     }
 
     public ObjectState getObjectState(int object) {
@@ -169,14 +184,13 @@ public abstract class PartialEscapeBlockState<T extends PartialEscapeBlockState<
      * entries.
      */
     public void materializeBefore(FixedNode fixed, VirtualObjectNode virtual, GraphEffectList materializeEffects) {
-        PartialEscapeClosure.COUNTER_MATERIALIZATIONS.increment();
+        PartialEscapeClosure.COUNTER_MATERIALIZATIONS.increment(fixed.getDebug());
         List<AllocatedObjectNode> objects = new ArrayList<>(2);
         List<ValueNode> values = new ArrayList<>(8);
         List<List<MonitorIdNode>> locks = new ArrayList<>();
         List<ValueNode> otherAllocations = new ArrayList<>(2);
         List<Boolean> ensureVirtual = new ArrayList<>(2);
         materializeWithCommit(fixed, virtual, objects, locks, values, ensureVirtual, otherAllocations);
-        assert fixed != null;
 
         materializeEffects.addVirtualizationDelta(-(objects.size() + otherAllocations.size()));
         materializeEffects.add("materializeBefore", new Effect() {
@@ -255,14 +269,14 @@ public abstract class PartialEscapeBlockState<T extends PartialEscapeBlockState<
             }
             objectMaterialized(virtual, (AllocatedObjectNode) representation, values.subList(pos, pos + entries.length));
         } else {
-            VirtualUtil.trace(options, "materialized %s as %s", virtual, representation);
+            VirtualUtil.trace(options, debug, "materialized %s as %s", virtual, representation);
             otherAllocations.add(representation);
             assert obj.getLocks() == null;
         }
     }
 
     protected void objectMaterialized(VirtualObjectNode virtual, AllocatedObjectNode representation, List<ValueNode> values) {
-        VirtualUtil.trace(options, "materialized %s as %s with values %s", virtual, representation, values);
+        VirtualUtil.trace(options, debug, "materialized %s as %s with values %s", virtual, representation, values);
     }
 
     public void addObject(int virtual, ObjectState state) {
@@ -305,41 +319,6 @@ public abstract class PartialEscapeBlockState<T extends PartialEscapeBlockState<
             }
         }
         return true;
-    }
-
-    protected static <K, V> boolean compareMaps(Map<K, V> left, Map<K, V> right) {
-        if (left.size() != right.size()) {
-            return false;
-        }
-        return compareMapsNoSize(left, right);
-    }
-
-    protected static <K, V> boolean compareMapsNoSize(Map<K, V> left, Map<K, V> right) {
-        if (left == right) {
-            return true;
-        }
-        for (Map.Entry<K, V> entry : right.entrySet()) {
-            K key = entry.getKey();
-            V value = entry.getValue();
-            assert value != null;
-            V otherValue = left.get(key);
-            if (otherValue != value && !value.equals(otherValue)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    protected static <U, V> void meetMaps(Map<U, V> target, Map<U, V> source) {
-        Iterator<Map.Entry<U, V>> iter = target.entrySet().iterator();
-        while (iter.hasNext()) {
-            Map.Entry<U, V> entry = iter.next();
-            if (source.containsKey(entry.getKey())) {
-                assert source.get(entry.getKey()) == entry.getValue();
-            } else {
-                iter.remove();
-            }
-        }
     }
 
     public void resetObjectStates(int size) {

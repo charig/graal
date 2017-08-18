@@ -27,7 +27,6 @@ import static jdk.vm.ci.code.ValueUtil.asRegister;
 import static jdk.vm.ci.code.ValueUtil.isIllegal;
 import static jdk.vm.ci.code.ValueUtil.isLegal;
 import static jdk.vm.ci.code.ValueUtil.isRegister;
-import static org.graalvm.compiler.core.common.GraalOptions.DetailedAsserts;
 import static org.graalvm.compiler.lir.LIRValueUtil.isVariable;
 import static org.graalvm.compiler.lir.phases.LIRPhase.Options.LIROptimization;
 
@@ -40,8 +39,8 @@ import org.graalvm.compiler.core.common.LIRKind;
 import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
 import org.graalvm.compiler.core.common.cfg.AbstractBlockBase;
 import org.graalvm.compiler.core.common.cfg.BlockMap;
-import org.graalvm.compiler.debug.Debug;
-import org.graalvm.compiler.debug.Debug.Scope;
+import org.graalvm.compiler.debug.Assertions;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.debug.Indent;
 import org.graalvm.compiler.lir.LIR;
@@ -128,6 +127,7 @@ public class LinearScan {
     private final MoveFactory moveFactory;
 
     private final BlockMap<BlockData> blockData;
+    protected final DebugContext debug;
 
     /**
      * List of blocks in linear-scan order. This is only correct as long as the CFG does not change.
@@ -185,10 +185,13 @@ public class LinearScan {
     protected final Interval intervalEndMarker;
     public final Range rangeEndMarker;
     public final boolean detailedAsserts;
+    private final LIRGenerationResult res;
 
     protected LinearScan(TargetDescription target, LIRGenerationResult res, MoveFactory spillMoveFactory, RegisterAllocationConfig regAllocConfig, AbstractBlockBase<?>[] sortedBlocks,
                     boolean neverSpillConstants) {
         this.ir = res.getLIR();
+        this.res = res;
+        this.debug = ir.getDebug();
         this.moveFactory = spillMoveFactory;
         this.frameMapBuilder = res.getFrameMapBuilder();
         this.sortedBlocks = sortedBlocks;
@@ -203,7 +206,11 @@ public class LinearScan {
         this.rangeEndMarker = new Range(Integer.MAX_VALUE, Integer.MAX_VALUE, null);
         this.intervalEndMarker = new Interval(Value.ILLEGAL, Interval.END_MARKER_OPERAND_NUMBER, null, rangeEndMarker);
         this.intervalEndMarker.next = intervalEndMarker;
-        this.detailedAsserts = DetailedAsserts.getValue(ir.getOptions());
+        this.detailedAsserts = Assertions.detailedAssertionsEnabled(ir.getOptions());
+    }
+
+    public LIRGenerationResult getLIRGenerationResult() {
+        return res;
     }
 
     public Interval intervalEndMarker() {
@@ -212,6 +219,10 @@ public class LinearScan {
 
     public OptionValues getOptions() {
         return ir.getOptions();
+    }
+
+    public DebugContext getDebug() {
+        return debug;
     }
 
     public int getFirstLirInstructionId(AbstractBlockBase<?> block) {
@@ -636,8 +647,8 @@ public class LinearScan {
         Interval result = interval.getSplitChildAtOpId(opId, mode, this);
 
         if (result != null) {
-            if (Debug.isLogEnabled()) {
-                Debug.log("Split child at pos %d of interval %s is %s", opId, interval, result);
+            if (debug.isLogEnabled()) {
+                debug.log("Split child at pos %d of interval %s is %s", opId, interval, result);
             }
             return result;
         }
@@ -673,11 +684,11 @@ public class LinearScan {
         /*
          * This is the point to enable debug logging for the whole register allocation.
          */
-        try (Indent indent = Debug.logAndIndent("LinearScan allocate")) {
+        try (Indent indent = debug.logAndIndent("LinearScan allocate")) {
 
             createLifetimeAnalysisPhase().apply(target, lirGenRes, context);
 
-            try (Scope s = Debug.scope("AfterLifetimeAnalysis", (Object) intervals)) {
+            try (DebugContext.Scope s = debug.scope("AfterLifetimeAnalysis", (Object) intervals)) {
                 sortIntervalsBeforeAllocation();
 
                 createRegisterAllocationPhase().apply(target, lirGenRes, context);
@@ -700,7 +711,7 @@ public class LinearScan {
                     verifyIntervals();
                 }
             } catch (Throwable e) {
-                throw Debug.handle(e);
+                throw debug.handle(e);
             }
         }
     }
@@ -734,23 +745,23 @@ public class LinearScan {
 
     @SuppressWarnings("try")
     public void printIntervals(String label) {
-        if (Debug.isLogEnabled()) {
-            try (Indent indent = Debug.logAndIndent("intervals %s", label)) {
+        if (debug.isLogEnabled()) {
+            try (Indent indent = debug.logAndIndent("intervals %s", label)) {
                 for (Interval interval : intervals) {
                     if (interval != null) {
-                        Debug.log("%s", interval.logString(this));
+                        debug.log("%s", interval.logString(this));
                     }
                 }
 
-                try (Indent indent2 = Debug.logAndIndent("Basic Blocks")) {
+                try (Indent indent2 = debug.logAndIndent("Basic Blocks")) {
                     for (int i = 0; i < blockCount(); i++) {
                         AbstractBlockBase<?> block = blockAt(i);
-                        Debug.log("B%d [%d, %d, %s] ", block.getId(), getFirstLirInstructionId(block), getLastLirInstructionId(block), block.getLoop());
+                        debug.log("B%d [%d, %d, %s] ", block.getId(), getFirstLirInstructionId(block), getLastLirInstructionId(block), block.getLoop());
                     }
                 }
             }
         }
-        Debug.dump(Debug.VERBOSE_LEVEL, new LinearScanIntervalDumper(Arrays.copyOf(intervals, intervalsSize)), label);
+        debug.dump(DebugContext.VERBOSE_LEVEL, new LinearScanIntervalDumper(Arrays.copyOf(intervals, intervalsSize)), label);
     }
 
     boolean verify() {
@@ -759,7 +770,7 @@ public class LinearScan {
 
         verifyRegisters();
 
-        Debug.log("no errors found");
+        debug.log("no errors found");
 
         return true;
     }
@@ -767,7 +778,7 @@ public class LinearScan {
     @SuppressWarnings("try")
     private void verifyRegisters() {
         // Enable this logging to get output for the verification process.
-        try (Indent indent = Debug.logAndIndent("verifying register allocation")) {
+        try (Indent indent = debug.logAndIndent("verifying register allocation")) {
             RegisterVerifier verifier = new RegisterVerifier(this);
             verifier.verify(blockAt(0));
         }
@@ -775,7 +786,7 @@ public class LinearScan {
 
     @SuppressWarnings("try")
     protected void verifyIntervals() {
-        try (Indent indent = Debug.logAndIndent("verifying intervals")) {
+        try (Indent indent = debug.logAndIndent("verifying intervals")) {
             int len = intervalsSize;
 
             for (int i = 0; i < len; i++) {
@@ -787,33 +798,33 @@ public class LinearScan {
                 i1.checkSplitChildren();
 
                 if (i1.operandNumber != i) {
-                    Debug.log("Interval %d is on position %d in list", i1.operandNumber, i);
-                    Debug.log(i1.logString(this));
+                    debug.log("Interval %d is on position %d in list", i1.operandNumber, i);
+                    debug.log(i1.logString(this));
                     throw new GraalError("");
                 }
 
                 if (isVariable(i1.operand) && i1.kind().equals(LIRKind.Illegal)) {
-                    Debug.log("Interval %d has no type assigned", i1.operandNumber);
-                    Debug.log(i1.logString(this));
+                    debug.log("Interval %d has no type assigned", i1.operandNumber);
+                    debug.log(i1.logString(this));
                     throw new GraalError("");
                 }
 
                 if (i1.location() == null) {
-                    Debug.log("Interval %d has no register assigned", i1.operandNumber);
-                    Debug.log(i1.logString(this));
+                    debug.log("Interval %d has no register assigned", i1.operandNumber);
+                    debug.log(i1.logString(this));
                     throw new GraalError("");
                 }
 
                 if (i1.first().isEndMarker()) {
-                    Debug.log("Interval %d has no Range", i1.operandNumber);
-                    Debug.log(i1.logString(this));
+                    debug.log("Interval %d has no Range", i1.operandNumber);
+                    debug.log(i1.logString(this));
                     throw new GraalError("");
                 }
 
                 for (Range r = i1.first(); !r.isEndMarker(); r = r.next) {
                     if (r.from >= r.to) {
-                        Debug.log("Interval %d has zero length range", i1.operandNumber);
-                        Debug.log(i1.logString(this));
+                        debug.log("Interval %d has zero length range", i1.operandNumber);
+                        debug.log(i1.logString(this));
                         throw new GraalError("");
                     }
                 }
@@ -860,7 +871,7 @@ public class LinearScan {
 
     @SuppressWarnings("try")
     void verifyNoOopsInFixedIntervals() {
-        try (Indent indent = Debug.logAndIndent("verifying that no oops are in fixed intervals *")) {
+        try (Indent indent = debug.logAndIndent("verifying that no oops are in fixed intervals *")) {
             CheckConsumer checkConsumer = new CheckConsumer();
 
             Interval fixedIntervals;

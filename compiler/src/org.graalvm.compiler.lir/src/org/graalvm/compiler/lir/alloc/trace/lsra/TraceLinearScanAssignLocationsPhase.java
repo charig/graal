@@ -24,6 +24,7 @@ package org.graalvm.compiler.lir.alloc.trace.lsra;
 
 import static jdk.vm.ci.code.ValueUtil.isIllegal;
 import static jdk.vm.ci.code.ValueUtil.isRegister;
+import static org.graalvm.compiler.lir.LIRValueUtil.asVariable;
 import static org.graalvm.compiler.lir.LIRValueUtil.isConstantValue;
 import static org.graalvm.compiler.lir.LIRValueUtil.isStackSlotValue;
 import static org.graalvm.compiler.lir.LIRValueUtil.isVariable;
@@ -37,7 +38,7 @@ import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
 import org.graalvm.compiler.core.common.alloc.Trace;
 import org.graalvm.compiler.core.common.alloc.TraceBuilderResult;
 import org.graalvm.compiler.core.common.cfg.AbstractBlockBase;
-import org.graalvm.compiler.debug.Debug;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.debug.Indent;
 import org.graalvm.compiler.lir.ConstantValue;
@@ -108,7 +109,7 @@ final class TraceLinearScanAssignLocationsPhase extends TraceLinearScanAllocatio
             return getLocation(op, interval, mode);
         }
 
-        private static Value getLocation(LIRInstruction op, TraceInterval interval, OperandMode mode) {
+        private Value getLocation(LIRInstruction op, TraceInterval interval, OperandMode mode) {
             if (isIllegal(interval.location()) && interval.canMaterialize()) {
                 if (op instanceof LabelOp) {
                     /*
@@ -118,7 +119,7 @@ final class TraceLinearScanAssignLocationsPhase extends TraceLinearScanAllocatio
                     return Value.ILLEGAL;
                 }
                 assert mode != OperandMode.DEF;
-                return new ConstantValue(interval.kind(), interval.getMaterializedValue());
+                return new ConstantValue(allocator.getKind(interval), interval.getMaterializedValue());
             }
             return interval.location();
         }
@@ -164,7 +165,8 @@ final class TraceLinearScanAssignLocationsPhase extends TraceLinearScanAllocatio
 
         @SuppressWarnings("try")
         private void assignBlock(AbstractBlockBase<?> block) {
-            try (Indent indent2 = Debug.logAndIndent("assign locations in block B%d", block.getId())) {
+            DebugContext debug = allocator.getDebug();
+            try (Indent indent2 = debug.logAndIndent("assign locations in block B%d", block.getId())) {
                 ArrayList<LIRInstruction> instructions = allocator.getLIR().getLIRforBlock(block);
                 handleBlockBegin(block, instructions);
                 int numInst = instructions.size();
@@ -226,7 +228,7 @@ final class TraceLinearScanAssignLocationsPhase extends TraceLinearScanAllocatio
             return values;
         }
 
-        private static Value valueAtBlockBoundary(LIRInstruction instruction, TraceInterval interval, OperandMode mode) {
+        private Value valueAtBlockBoundary(LIRInstruction instruction, TraceInterval interval, OperandMode mode) {
             if (mode == OperandMode.DEF && interval == null) {
                 // not needed in this trace
                 return Value.ILLEGAL;
@@ -275,7 +277,7 @@ final class TraceLinearScanAssignLocationsPhase extends TraceLinearScanAllocatio
             // remove useless moves
             if (MoveOp.isMoveOp(op)) {
                 AllocatableValue result = MoveOp.asMoveOp(op).getResult();
-                if (isVariable(result) && allocator.isMaterialized(result, op.id(), OperandMode.DEF)) {
+                if (isVariable(result) && allocator.isMaterialized(asVariable(result), op.id(), OperandMode.DEF)) {
                     /*
                      * This happens if a materializable interval is originally not spilled but then
                      * kicked out in LinearScanWalker.splitForSpilling(). When kicking out such an
@@ -311,7 +313,7 @@ final class TraceLinearScanAssignLocationsPhase extends TraceLinearScanAllocatio
 
         @SuppressWarnings("try")
         private void assign() {
-            try (Indent indent = Debug.logAndIndent("assign locations")) {
+            try (Indent indent = allocator.getDebug().logAndIndent("assign locations")) {
                 for (AbstractBlockBase<?> block : allocator.sortedBlocks()) {
                     assignBlock(block);
                 }

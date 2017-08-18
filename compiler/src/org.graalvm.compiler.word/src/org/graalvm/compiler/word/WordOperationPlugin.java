@@ -22,15 +22,13 @@
  */
 package org.graalvm.compiler.word;
 
-import static org.graalvm.api.word.LocationIdentity.any;
 import static org.graalvm.compiler.nodes.ConstantNode.forInt;
 import static org.graalvm.compiler.nodes.ConstantNode.forIntegerKind;
+import static org.graalvm.word.LocationIdentity.any;
 
 import java.lang.reflect.Constructor;
 import java.util.Arrays;
 
-import org.graalvm.api.word.LocationIdentity;
-import org.graalvm.api.word.WordFactory;
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
 import org.graalvm.compiler.bytecode.BridgeMethodUtils;
 import org.graalvm.compiler.core.common.calc.Condition;
@@ -70,6 +68,8 @@ import org.graalvm.compiler.nodes.memory.address.OffsetAddressNode;
 import org.graalvm.compiler.nodes.type.StampTool;
 import org.graalvm.compiler.word.Word.Opcode;
 import org.graalvm.compiler.word.Word.Operation;
+import org.graalvm.word.LocationIdentity;
+import org.graalvm.word.WordFactory;
 
 import jdk.vm.ci.code.BailoutException;
 import jdk.vm.ci.meta.JavaKind;
@@ -280,6 +280,16 @@ public class WordOperationPlugin extends WordFactory implements NodePlugin, Type
             case COMPARISON:
                 assert args.length == 2;
                 b.push(returnKind, comparisonOp(b, operation.condition(), args[0], fromSigned(b, args[1])));
+                break;
+
+            case IS_NULL:
+                assert args.length == 1;
+                b.push(returnKind, comparisonOp(b, Condition.EQ, args[0], ConstantNode.forIntegerKind(wordKind, 0L)));
+                break;
+
+            case IS_NON_NULL:
+                assert args.length == 1;
+                b.push(returnKind, comparisonOp(b, Condition.NE, args[0], ConstantNode.forIntegerKind(wordKind, 0L)));
                 break;
 
             case NOT:

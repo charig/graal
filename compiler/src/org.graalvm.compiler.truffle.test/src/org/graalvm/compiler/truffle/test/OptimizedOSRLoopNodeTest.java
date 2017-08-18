@@ -22,9 +22,11 @@
  */
 package org.graalvm.compiler.truffle.test;
 
+import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleCompilationThreshold;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleInvalidationReprofileCount;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleMinInvokeThreshold;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleOSRCompilationThreshold;
+import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleReplaceReprofileCount;
 import static org.junit.Assert.assertSame;
 
 import java.util.concurrent.ExecutionException;
@@ -58,6 +60,7 @@ import com.oracle.truffle.api.frame.FrameSlot;
 import com.oracle.truffle.api.frame.FrameSlotKind;
 import com.oracle.truffle.api.frame.FrameSlotTypeException;
 import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.nodes.DirectCallNode;
 import com.oracle.truffle.api.nodes.LoopNode;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RepeatingNode;
@@ -71,9 +74,8 @@ public class OptimizedOSRLoopNodeTest extends TestWithSynchronousCompiling {
     private static final int OSR_THRESHOLD = TruffleCompilerOptions.getValue(TruffleOSRCompilationThreshold);
     private static final int OSR_INVALIDATION_REPROFILE = TruffleCompilerOptions.getValue(TruffleInvalidationReprofileCount);
 
-    @DataPoint public static final OSRLoopFactory CONFIGURED = (repeating, readFrameSlots,
-                    writtenFrameSlots) -> OptimizedOSRLoopNode.createOSRLoop(repeating, OSR_THRESHOLD,
-                                    OSR_INVALIDATION_REPROFILE, readFrameSlots, writtenFrameSlots);
+    @DataPoint public static final OSRLoopFactory CONFIGURED = (repeating, readFrameSlots, writtenFrameSlots) -> OptimizedOSRLoopNode.createOSRLoop(repeating, OSR_THRESHOLD,
+                    OSR_INVALIDATION_REPROFILE, readFrameSlots, writtenFrameSlots);
 
     @DataPoint public static final OSRLoopFactory DEFAULT = (repeating, readFrameSlots,
                     writtenFrameSlots) -> (OptimizedOSRLoopNode) OptimizedOSRLoopNode.create(repeating);
@@ -101,6 +103,24 @@ public class OptimizedOSRLoopNodeTest extends TestWithSynchronousCompiling {
         target.call(2);
         assertCompiled(rootNode.getOSRTarget());
         Assert.assertTrue(rootNode.wasRepeatingCalledCompiled());
+    }
+
+    @SuppressWarnings("try")
+    @Theory
+    public void testOSRAndRewriteDoesNotSuppressTargetCompilation(OSRLoopFactory factory) {
+        try (TruffleCompilerOptions.TruffleOptionsOverrideScope s = TruffleCompilerOptions.overrideOptions(TruffleCompilerOptions.TruffleCompilationThreshold, 3)) {
+            TestRootNodeWithReplacement rootNode = new TestRootNodeWithReplacement(factory, new TestRepeatingNode());
+            OptimizedCallTarget target = new OptimizedCallTarget(null, rootNode);
+            target.call(OSR_THRESHOLD + 1);
+            assertCompiled(rootNode.getOSRTarget());
+            assertNotCompiled(target);
+            target.nodeReplaced(rootNode.toReplace, new TestRepeatingNode(), "test");
+            for (int i = 0; i < TruffleCompilerOptions.getValue(TruffleCompilationThreshold) + TruffleCompilerOptions.getValue(TruffleReplaceReprofileCount) - 1; i++) {
+                target.call(2);
+            }
+            assertCompiled(rootNode.getOSRTarget());
+            assertCompiled(target);
+        }
     }
 
     /*
@@ -548,6 +568,19 @@ public class OptimizedOSRLoopNodeTest extends TestWithSynchronousCompiling {
         assertCompiled(rootNode.getOSRTarget());
     }
 
+    /**
+     * Test that graal stack frame instances have call nodes associated even when there are OSR
+     * frames on the stack.
+     */
+    @Theory
+    public void testStackFrameNodes(OSRLoopFactory factory) {
+        TestOSRStackTraceFromAbove testOSRStackTrace = new TestOSRStackTraceFromAbove();
+        TestRootNode rootNode = new TestRootNode(factory, testOSRStackTrace);
+        OptimizedCallTarget target = (OptimizedCallTarget) runtime.createCallTarget(rootNode);
+        rootNode.forceOSR();
+        target.call(1);
+    }
+
     private static class TestOSRStackTrace extends TestRepeatingNode {
 
         @Override
@@ -560,17 +593,47 @@ public class OptimizedOSRLoopNodeTest extends TestWithSynchronousCompiling {
         }
 
         @TruffleBoundary
-        private void checkStackTrace() {
+        protected void checkStackTrace() {
             final OptimizedOSRLoopNode loop = (OptimizedOSRLoopNode) getParent();
             final OptimizedCallTarget compiledLoop = loop.getCompiledOSRLoop();
 
             Truffle.getRuntime().iterateFrames(new FrameInstanceVisitor<Void>() {
+
+                private boolean first = true;
+
                 @Override
                 public Void visitFrame(FrameInstance frameInstance) {
                     Assert.assertNotSame(compiledLoop, frameInstance.getCallTarget());
+                    if (first) {
+                        first = false;
+                    } else {
+                        Assert.assertNotNull(frameInstance.getCallNode());
+                    }
                     return null;
                 }
             });
+        }
+
+    }
+
+    private static class TestOSRStackTraceFromAbove extends TestOSRStackTrace {
+
+        @Child DirectCallNode callNode;
+
+        @Override
+        @TruffleBoundary
+        protected void checkStackTrace() {
+            // Check the stack from an additional frame created on top
+            RootNode root = new RootNode(null) {
+                @Override
+                public Object execute(VirtualFrame frame) {
+                    TestOSRStackTraceFromAbove.super.checkStackTrace();
+                    return null;
+                }
+            };
+            callNode = runtime.createDirectCallNode(runtime.createCallTarget(root));
+            adoptChildren();
+            callNode.call(new Object[]{});
         }
 
     }
@@ -592,6 +655,15 @@ public class OptimizedOSRLoopNodeTest extends TestWithSynchronousCompiling {
             } catch (ExecutionException | TimeoutException e) {
                 Assert.fail("timeout");
             }
+        }
+    }
+
+    private static class TestRootNodeWithReplacement extends TestRootNode {
+        @Child OptimizedOSRLoopNode toReplace;
+
+        TestRootNodeWithReplacement(OSRLoopFactory factory, TestRepeatingNode repeating) {
+            super(factory, repeating);
+            toReplace = factory.createOSRLoop(repeating, new FrameSlot[]{param1, param2}, new FrameSlot[]{param1, param2});
         }
     }
 

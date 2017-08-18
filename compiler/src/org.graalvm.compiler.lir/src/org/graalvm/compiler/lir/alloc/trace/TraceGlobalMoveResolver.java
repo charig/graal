@@ -40,10 +40,11 @@ import java.util.HashSet;
 
 import org.graalvm.compiler.core.common.LIRKind;
 import org.graalvm.compiler.core.common.alloc.RegisterAllocationConfig;
-import org.graalvm.compiler.debug.Debug;
-import org.graalvm.compiler.debug.DebugCounter;
+import org.graalvm.compiler.debug.CounterKey;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.debug.Indent;
+import org.graalvm.compiler.lir.LIR;
 import org.graalvm.compiler.lir.LIRInsertionBuffer;
 import org.graalvm.compiler.lir.LIRInstruction;
 import org.graalvm.compiler.lir.VirtualStackSlot;
@@ -64,8 +65,8 @@ import jdk.vm.ci.meta.Value;
  */
 public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhase.MoveResolver {
 
-    private static final DebugCounter cycleBreakingSlotsAllocated = Debug.counter("TraceRA[cycleBreakingSlotsAllocated(global)]");
-    private static final DebugCounter cycleBreakingSlotsReused = Debug.counter("TraceRA[cycleBreakingSlotsReused(global)]");
+    private static final CounterKey cycleBreakingSlotsAllocated = DebugContext.counter("TraceRA[cycleBreakingSlotsAllocated(global)]");
+    private static final CounterKey cycleBreakingSlotsReused = DebugContext.counter("TraceRA[cycleBreakingSlotsReused(global)]");
 
     private int insertIdx;
     private LIRInsertionBuffer insertionBuffer; // buffer where moves are inserted
@@ -81,6 +82,8 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
     private final FrameMapBuilder frameMapBuilder;
     private final OptionValues options;
     private final RegisterAllocationConfig registerAllocationConfig;
+    private final LIRGenerationResult res;
+    private final DebugContext debug;
 
     private void setValueBlocked(Value location, int direction) {
         assert direction == 1 || direction == -1 : "out of bounds";
@@ -156,7 +159,10 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
 
         FrameMap frameMap = frameMapBuilderTool.getFrameMap();
         this.firstVirtualStackIndex = !frameMap.frameNeedsAllocating() ? 0 : frameMap.currentFrameSize() + 1;
-        this.options = res.getLIR().getOptions();
+        this.res = res;
+        LIR lir = res.getLIR();
+        this.options = lir.getOptions();
+        this.debug = lir.getDebug();
     }
 
     private boolean checkEmpty() {
@@ -226,7 +232,7 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
         if (mightBeBlocked(location)) {
             assert areMultipleReadsAllowed() || valueBlocked(location) == 0 : "location already marked as used: " + location;
             setValueBlocked(location, 1);
-            Debug.log("block %s", location);
+            debug.log("block %s", location);
         }
     }
 
@@ -235,7 +241,7 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
         if (mightBeBlocked(location)) {
             assert valueBlocked(location) > 0 : "location already marked as unused: " + location;
             setValueBlocked(location, -1);
-            Debug.log("unblock %s", location);
+            debug.log("unblock %s", location);
         }
     }
 
@@ -314,16 +320,18 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
         insertIdx = -1;
     }
 
-    private void insertMove(Value fromOperand, AllocatableValue toOperand) {
+    private LIRInstruction insertMove(Value fromOperand, AllocatableValue toOperand) {
         assert !fromOperand.equals(toOperand) : "from and to are equal: " + fromOperand + " vs. " + toOperand;
         assert LIRKind.verifyMoveKinds(fromOperand.getValueKind(), fromOperand.getValueKind(), registerAllocationConfig) : "move between different types";
         assert insertIdx != -1 : "must setup insert position first";
 
-        insertionBuffer.append(insertIdx, createMove(fromOperand, toOperand));
+        LIRInstruction move = createMove(fromOperand, toOperand);
+        insertionBuffer.append(insertIdx, move);
 
-        if (Debug.isLogEnabled()) {
-            Debug.log("insert move from %s to %s at %d", fromOperand, toOperand, insertIdx);
+        if (debug.isLogEnabled()) {
+            debug.log("insert move from %s to %s at %d", fromOperand, toOperand, insertIdx);
         }
+        return move;
     }
 
     /**
@@ -339,9 +347,9 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
 
     @SuppressWarnings("try")
     private void resolveMappings() {
-        try (Indent indent = Debug.logAndIndent("resolveMapping")) {
+        try (Indent indent = debug.logAndIndent("resolveMapping")) {
             assert verifyBeforeResolve();
-            if (Debug.isLogEnabled()) {
+            if (debug.isLogEnabled()) {
                 printMapping();
             }
 
@@ -363,7 +371,8 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
                     AllocatableValue toLocation = mappingTo.get(i);
                     if (safeToProcessMove(fromLocation, toLocation)) {
                         // this interval can be processed because target is free
-                        insertMove(fromLocation, toLocation);
+                        LIRInstruction move = insertMove(fromLocation, toLocation);
+                        move.setComment(res, "TraceGlobalMoveResolver: resolveMapping");
                         unblock(fromLocation);
                         if (isStackSlotValue(toLocation)) {
                             if (busySpillSlots == null) {
@@ -406,23 +415,24 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
 
         // create a new spill interval and assign a stack slot to it
         Value from = mappingFrom.get(spillCandidate);
-        try (Indent indent = Debug.logAndIndent("BreakCycle: %s", from)) {
+        try (Indent indent = debug.logAndIndent("BreakCycle: %s", from)) {
             AllocatableValue spillSlot = null;
             if (TraceRegisterAllocationPhase.Options.TraceRAreuseStackSlotsForMoveResolutionCycleBreaking.getValue(options) && !isStackSlotValue(from)) {
                 // don't use the stack slot if from is already the stack slot
                 Value fromStack = mappingFromStack.get(spillCandidate);
                 if (fromStack != null) {
                     spillSlot = (AllocatableValue) fromStack;
-                    cycleBreakingSlotsReused.increment();
-                    Debug.log("reuse slot for spilling: %s", spillSlot);
+                    cycleBreakingSlotsReused.increment(debug);
+                    debug.log("reuse slot for spilling: %s", spillSlot);
                 }
             }
             if (spillSlot == null) {
                 spillSlot = frameMapBuilder.allocateSpillSlot(from.getValueKind());
-                cycleBreakingSlotsAllocated.increment();
-                Debug.log("created new slot for spilling: %s", spillSlot);
+                cycleBreakingSlotsAllocated.increment(debug);
+                debug.log("created new slot for spilling: %s", spillSlot);
                 // insert a move from register to stack and update the mapping
-                insertMove(from, spillSlot);
+                LIRInstruction move = insertMove(from, spillSlot);
+                move.setComment(res, "TraceGlobalMoveResolver: breakCycle");
             }
             block(spillSlot);
             mappingFrom.set(spillCandidate, spillSlot);
@@ -432,9 +442,9 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
 
     @SuppressWarnings("try")
     private void printMapping() {
-        try (Indent indent = Debug.logAndIndent("Mapping")) {
+        try (Indent indent = debug.logAndIndent("Mapping")) {
             for (int i = mappingFrom.size() - 1; i >= 0; i--) {
-                Debug.log("move %s <- %s (%s)", mappingTo.get(i), mappingFrom.get(i), mappingFromStack.get(i));
+                debug.log("move %s <- %s (%s)", mappingTo.get(i), mappingFrom.get(i), mappingFromStack.get(i));
             }
         }
     }
@@ -448,8 +458,8 @@ public final class TraceGlobalMoveResolver extends TraceGlobalMoveResolutionPhas
 
     @Override
     public void addMapping(Value from, AllocatableValue to, Value fromStack) {
-        if (Debug.isLogEnabled()) {
-            Debug.log("add move mapping from %s to %s", from, to);
+        if (debug.isLogEnabled()) {
+            debug.log("add move mapping from %s to %s", from, to);
         }
 
         assert !from.equals(to) : "from and to interval equal: " + from;

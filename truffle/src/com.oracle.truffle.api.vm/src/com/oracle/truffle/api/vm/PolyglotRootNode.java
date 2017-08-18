@@ -24,13 +24,15 @@
  */
 package com.oracle.truffle.api.vm;
 
+import static com.oracle.truffle.api.vm.VMAccessor.JAVAINTEROP;
+import static com.oracle.truffle.api.vm.VMAccessor.LANGUAGE;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.frame.VirtualFrame;
@@ -45,7 +47,6 @@ import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.source.Source;
-import com.oracle.truffle.api.vm.PolyglotEngine.Access;
 import com.oracle.truffle.api.vm.PolyglotEngine.Language;
 
 abstract class PolyglotRootNode extends RootNode {
@@ -135,7 +136,7 @@ abstract class PolyglotRootNode extends RootNode {
             super(engine);
             this.returnConvertNode = new ConvertNode();
             this.messageNode = message.createNode();
-            this.toJavaNode = Access.JAVA_INTEROP.createToJavaNode();
+            this.toJavaNode = JAVAINTEROP.createToJavaNode();
         }
 
         @Override
@@ -151,15 +152,12 @@ abstract class PolyglotRootNode extends RootNode {
 
     private static final class AsJavaRootNode extends PolyglotRootNode {
         @Child private Node toJavaNode;
-
         private final Class<? extends TruffleObject> receiverType;
-
-        @CompilationFinal private int argumentCount = -1;
 
         AsJavaRootNode(PolyglotEngine engine, Class<? extends TruffleObject> receiverType) {
             super(engine);
             this.receiverType = receiverType;
-            this.toJavaNode = Access.JAVA_INTEROP.createToJavaNode();
+            this.toJavaNode = JAVAINTEROP.createToJavaNode();
         }
 
         @Override
@@ -168,7 +166,7 @@ abstract class PolyglotRootNode extends RootNode {
             final Class<?> targetType = (Class<?>) args[1];
             if (receiverType.isInstance(args[0])) {
                 final TruffleObject value = receiverType.cast(args[0]);
-                return Access.JAVA_INTEROP.toJava(toJavaNode, targetType, value);
+                return JAVAINTEROP.toJava(toJavaNode, targetType, value);
             } else {
                 throw new ClassCastException();
             }
@@ -252,7 +250,7 @@ abstract class PolyglotRootNode extends RootNode {
 
         @TruffleBoundary
         private void printResult(Object result) {
-            String stringResult = Access.LANGS.toStringIfVisible(language.getEnv(false), result, true);
+            String stringResult = LANGUAGE.toStringIfVisible(language.getEnv(false), result, true);
             if (stringResult != null) {
                 try {
                     OutputStream out = language.engine().out;
@@ -266,7 +264,7 @@ abstract class PolyglotRootNode extends RootNode {
         }
 
         private void initialize() {
-            CallTarget target = Access.LANGS.parse(language.getEnv(true), source, null);
+            CallTarget target = LANGUAGE.parse(language.getEnv(true), source, null);
             if (target == null) {
                 throw new NullPointerException("Parsing has not produced a CallTarget for " + source);
             }

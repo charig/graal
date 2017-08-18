@@ -43,6 +43,7 @@ import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.Registration;
 import com.oracle.truffle.api.frame.FrameSlot;
 import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.instrumentation.AllocationReporter;
 import com.oracle.truffle.api.instrumentation.Instrumentable;
 import com.oracle.truffle.api.instrumentation.ProvidedTags;
 import com.oracle.truffle.api.instrumentation.StandardTags;
@@ -102,12 +103,13 @@ import com.oracle.truffle.api.source.SourceSection;
  * </ul>
  * </p>
  */
-@Registration(mimeType = InstrumentationTestLanguage.MIME_TYPE, name = "InstrumentTestLang", version = "2.0")
+@Registration(id = InstrumentationTestLanguage.ID, mimeType = InstrumentationTestLanguage.MIME_TYPE, name = "InstrumentTestLang", version = "2.0")
 @ProvidedTags({ExpressionNode.class, DefineNode.class, LoopNode.class,
                 StandardTags.StatementTag.class, StandardTags.CallTag.class, StandardTags.RootTag.class, BlockNode.class, StandardTags.RootTag.class})
 public class InstrumentationTestLanguage extends TruffleLanguage<Context>
                 implements SpecialService {
 
+    public static final String ID = "instrumentation-test-language";
     public static final String MIME_TYPE = "application/x-truffle-instrumentation-test-language";
     public static final String FILENAME_EXTENSION = ".titl";
 
@@ -143,7 +145,7 @@ public class InstrumentationTestLanguage extends TruffleLanguage<Context>
         if (sharedContext == null || sharedContext[0] == null) {
             Source initSource = (Source) env.getConfig().get("initSource");
             Boolean runInitAfterExec = (Boolean) env.getConfig().get("runInitAfterExec");
-            Context c = new Context(env.out(), env.err(), initSource, runInitAfterExec);
+            Context c = new Context(env.out(), env.err(), env.lookup(AllocationReporter.class), initSource, runInitAfterExec);
             if (sharedContext != null) {
                 sharedContext[0] = c;
             }
@@ -313,7 +315,7 @@ public class InstrumentationTestLanguage extends TruffleLanguage<Context>
                 case "CONSTANT":
                     return new ConstantNode(idents[0], childArray);
                 case "VARIABLE":
-                    return new VariableNode(idents[0], idents[1], childArray);
+                    return new VariableNode(idents[0], idents[1], childArray, lang.getContextReference());
                 case "PRINT":
                     return new PrintNode(idents[0], idents[1], childArray);
                 default:
@@ -570,28 +572,56 @@ public class InstrumentationTestLanguage extends TruffleLanguage<Context>
         return Integer.parseInt(identifier);
     }
 
-    private static class VariableNode extends InstrumentedNode {
+    private static final class VariableNode extends InstrumentedNode {
 
         private final String name;
         private final Object value;
+        private final ContextReference<Context> contextRef;
 
         @CompilationFinal private FrameSlot slot;
 
-        VariableNode(String name, String value, BaseNode[] children) {
+        private VariableNode(String name, String value, BaseNode[] children, ContextReference<Context> contextRef) {
             super(children);
             this.name = name;
             this.value = parseIdent(value);
+            this.contextRef = contextRef;
         }
 
         @Override
         public Object execute(VirtualFrame frame) {
+            if (contextRef.get().allocationReporter.isActive()) {
+                // Pretend we're allocating the value, for tests
+                contextRef.get().allocationReporter.onEnter(null, 0, getValueSize());
+            }
             if (slot == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 slot = frame.getFrameDescriptor().findOrAddFrameSlot(name);
             }
             frame.setObject(slot, value);
+            if (contextRef.get().allocationReporter.isActive()) {
+                contextRef.get().allocationReporter.onReturnValue(value, 0, getValueSize());
+            }
             super.execute(frame);
             return value;
+        }
+
+        private long getValueSize() {
+            if (value instanceof Byte || value instanceof Boolean) {
+                return 1;
+            }
+            if (value instanceof Character) {
+                return 2;
+            }
+            if (value instanceof Short) {
+                return 2;
+            }
+            if (value instanceof Integer || value instanceof Float) {
+                return 4;
+            }
+            if (value instanceof Long || value instanceof Double) {
+                return 8;
+            }
+            return AllocationReporter.SIZE_UNKNOWN;
         }
 
     }
@@ -701,9 +731,14 @@ public class InstrumentationTestLanguage extends TruffleLanguage<Context>
                         throw new AssertionError(where);
                 }
             }
+            writeAndFlush(writer, what);
+            return null;
+        }
+
+        @TruffleBoundary
+        private static void writeAndFlush(PrintWriter writer, String what) {
             writer.write(what);
             writer.flush();
-            return null;
         }
     }
 
@@ -867,13 +902,15 @@ class Context {
     final Map<String, TruffleObject> callFunctionObjects = new HashMap<>();
     final OutputStream out;
     final OutputStream err;
+    final AllocationReporter allocationReporter;
     final Source initSource;
     final boolean runInitAfterExec;
     RootCallTarget afterTarget;
 
-    Context(OutputStream out, OutputStream err, Source initSource, Boolean runInitAfterExec) {
+    Context(OutputStream out, OutputStream err, AllocationReporter allocationReporter, Source initSource, Boolean runInitAfterExec) {
         this.out = out;
         this.err = err;
+        this.allocationReporter = allocationReporter;
         this.initSource = initSource;
         this.runInitAfterExec = runInitAfterExec != null && runInitAfterExec;
     }

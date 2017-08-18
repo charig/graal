@@ -46,6 +46,8 @@ import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.truffle.GraalTruffleRuntime.LazyFrameBoxingQuery;
 import org.graalvm.compiler.truffle.debug.AbstractDebugCompilationListener;
 import org.graalvm.compiler.truffle.substitutions.TruffleGraphBuilderPlugins;
+import org.graalvm.options.OptionKey;
+import org.graalvm.options.OptionValues;
 
 import com.oracle.truffle.api.Assumption;
 import com.oracle.truffle.api.CompilerAsserts;
@@ -59,6 +61,7 @@ import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.frame.FrameDescriptor;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.impl.DefaultCompilerOptions;
+import com.oracle.truffle.api.nodes.ControlFlowException;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.NodeUtil;
 import com.oracle.truffle.api.nodes.NodeVisitor;
@@ -75,6 +78,16 @@ import jdk.vm.ci.meta.SpeculationLog;
 public class OptimizedCallTarget extends InstalledCode implements RootCallTarget, ReplaceObserver, com.oracle.truffle.api.LoopCountReceiver {
 
     private static final String NODE_REWRITING_ASSUMPTION_NAME = "nodeRewritingAssumption";
+    private static final long ENTRY_POINT_OFFSET;
+    static final String CALL_BOUNDARY_METHOD_NAME = "callProxy";
+
+    static {
+        try {
+            ENTRY_POINT_OFFSET = UnsafeAccess.UNSAFE.objectFieldOffset(InstalledCode.class.getDeclaredField("entryPoint"));
+        } catch (NoSuchFieldException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     /** The AST to be executed when this call target is called. */
     private final RootNode rootNode;
@@ -177,8 +190,8 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
     }
 
     public final Object callDirect(Object... args) {
+        getCompilationProfile().profileDirectCall(args);
         try {
-            getCompilationProfile().profileDirectCall(args);
             Object result = doInvoke(args);
             if (CompilerDirectives.inCompiledCode()) {
                 result = compilationProfile.injectReturnValueProfile(result);
@@ -210,7 +223,6 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
         } else {
             // We come here from compiled code
         }
-
         return callRoot(args);
     }
 
@@ -222,6 +234,7 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
             args = profile.injectArgumentProfile(originalArguments);
         }
         Object result = callProxy(createFrame(getRootNode().getFrameDescriptor(), args));
+
         if (profile != null) {
             profile.profileReturnValue(result);
         }
@@ -232,6 +245,12 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
         final boolean inCompiled = CompilerDirectives.inCompiledCode();
         try {
             return getRootNode().execute(frame);
+        } catch (ControlFlowException t) {
+            throw rethrow(compilationProfile.profileExceptionType(t));
+        } catch (Throwable t) {
+            Throwable profiledT = compilationProfile.profileExceptionType(t);
+            runtime().getTvmci().onThrowable(rootNode, profiledT);
+            throw rethrow(profiledT);
         } finally {
             // this assertion is needed to keep the values from being cleared as non-live locals
             assert frame != null && this != null;
@@ -245,7 +264,7 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
         runtime().getCompilationNotify().notifyCompilationDeoptimized(this, frame);
     }
 
-    private static GraalTruffleRuntime runtime() {
+    static GraalTruffleRuntime runtime() {
         return (GraalTruffleRuntime) Truffle.getRuntime();
     }
 
@@ -261,11 +280,16 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
         }
     }
 
-    private static OptimizedCompilationProfile createCompilationProfile() {
+    public final OptionValues getOptionValues() {
+        return runtime().getTvmci().getCompilerOptionValues(rootNode);
+    }
+
+    private OptimizedCompilationProfile createCompilationProfile() {
+        OptionValues optionValues = PolyglotCompilerOptions.getPolyglotValues(rootNode);
         if (TruffleCompilerOptions.getValue(TruffleCallTargetProfiling)) {
-            return TraceCompilationProfile.create();
+            return TraceCompilationProfile.create(optionValues);
         } else {
-            return OptimizedCompilationProfile.create();
+            return OptimizedCompilationProfile.create(optionValues);
         }
     }
 
@@ -290,8 +314,8 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
             if (task != null) {
                 Future<?> submitted = task.getFuture();
                 if (submitted != null) {
-                    boolean allowBackgroundCompilation = !(TruffleCompilerOptions.getValue(TrufflePerformanceWarningsAreFatal) &&
-                                    !TruffleCompilerOptions.getValue(TruffleCompilationExceptionsAreThrown));
+                    boolean allowBackgroundCompilation = !TruffleCompilerOptions.getValue(TrufflePerformanceWarningsAreFatal) &&
+                                    !TruffleCompilerOptions.getValue(TruffleCompilationExceptionsAreThrown);
                     boolean mayBeAsynchronous = TruffleCompilerOptions.getValue(TruffleBackgroundCompilation) && allowBackgroundCompilation;
                     runtime().finishCompilation(this, submitted, mayBeAsynchronous);
                 }
@@ -557,6 +581,19 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
         return DefaultCompilerOptions.INSTANCE;
     }
 
+    public void releaseEntryPoint() {
+        long seenEntryPoint = entryPoint;
+        if (seenEntryPoint == 0) {
+            return;
+        }
+        // No need to retry, since a failure means that the entry point was reset to zero.
+        // The reason is that the current thread is the only thread calling this method,
+        // and the only other thread that is changing the entryPoint is the VM itself.
+        // Furthermore, no other thread will reinstall the call target until the current thread
+        // completes.
+        UnsafeAccess.UNSAFE.compareAndSwapLong(this, ENTRY_POINT_OFFSET, seenEntryPoint, seenEntryPoint | 1);
+    }
+
     private static final class NonTrivialNodeCountVisitor implements NodeVisitor {
         public int nodeCount;
 
@@ -586,4 +623,9 @@ public class OptimizedCallTarget extends InstalledCode implements RootCallTarget
     void resetCompilationTask() {
         this.compilationTask = null;
     }
+
+    public <T> T getOptionValue(OptionKey<T> key) {
+        return PolyglotCompilerOptions.getValue(rootNode, key);
+    }
+
 }

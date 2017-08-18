@@ -145,7 +145,7 @@ public class AArch64Move {
         public void emitCode(CompilationResultBuilder crb, AArch64MacroAssembler masm) {
             Register dst = asRegister(result);
             AArch64Address adr = address.toAddress();
-            masm.loadAddress(dst, adr, address.getPlatformKind().getSizeInBytes());
+            masm.loadAddress(dst, adr, address.getScaleFactor());
         }
     }
 
@@ -241,8 +241,8 @@ public class AArch64Move {
 
         @Override
         public boolean makeNullCheckFor(Value value, LIRFrameState nullCheckState, int implicitNullCheckLimit) {
-            int immediate = addressValue.getImmediate();
-            if (state == null && value.equals(addressValue.getBase()) && addressValue.getOffset().equals(Value.ILLEGAL) && immediate >= 0 && immediate < implicitNullCheckLimit) {
+            int displacement = addressValue.getDisplacement();
+            if (state == null && value.equals(addressValue.getBase()) && addressValue.getOffset().equals(Value.ILLEGAL) && displacement >= 0 && displacement < implicitNullCheckLimit) {
                 state = nullCheckState;
                 return true;
             }
@@ -435,8 +435,9 @@ public class AArch64Move {
             try (ScratchRegister r2 = masm.getScratchRegister()) {
                 Register rscratch1 = r1.getRegister();
                 Register rscratch2 = r2.getRegister();
+                // use the slot kind to define the operand size
                 PlatformKind kind = input.getPlatformKind();
-                final int size = kind.getSizeInBytes() <= 4 ? 32 : 64;
+                final int size = kind.getSizeInBytes() * Byte.SIZE;
 
                 // Always perform stack -> stack copies through integer registers
                 crb.blockComment("[stack -> stack copy]");
@@ -466,8 +467,9 @@ public class AArch64Move {
     private static void reg2stack(CompilationResultBuilder crb, AArch64MacroAssembler masm, AllocatableValue result, AllocatableValue input) {
         AArch64Address dest = loadStackSlotAddress(crb, masm, asStackSlot(result), Value.ILLEGAL);
         Register src = asRegister(input);
-        AArch64Kind kind = (AArch64Kind) input.getPlatformKind();
-        int size = kind.getSizeInBytes() * Byte.SIZE;
+        // use the slot kind to define the operand size
+        AArch64Kind kind = (AArch64Kind) result.getPlatformKind();
+        final int size = kind.getSizeInBytes() * Byte.SIZE;
         if (kind.isInteger()) {
             masm.str(size, src, dest);
         } else {
@@ -477,6 +479,7 @@ public class AArch64Move {
 
     private static void stack2reg(CompilationResultBuilder crb, AArch64MacroAssembler masm, AllocatableValue result, AllocatableValue input) {
         AArch64Kind kind = (AArch64Kind) input.getPlatformKind();
+        // use the slot kind to define the operand size
         final int size = kind.getSizeInBytes() * Byte.SIZE;
         if (kind.isInteger()) {
             AArch64Address src = loadStackSlotAddress(crb, masm, asStackSlot(input), result);

@@ -26,6 +26,7 @@ import static jdk.vm.ci.hotspot.HotSpotCallingConventionType.JavaCall;
 import jdk.vm.ci.amd64.AMD64;
 import jdk.vm.ci.code.CodeCacheProvider;
 import jdk.vm.ci.code.InstalledCode;
+import jdk.vm.ci.code.MemoryBarriers;
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.meta.JavaKind;
 
@@ -36,6 +37,7 @@ import org.graalvm.compiler.asm.amd64.AMD64Assembler.ConditionFlag;
 import org.graalvm.compiler.asm.amd64.AMD64MacroAssembler;
 import org.graalvm.compiler.code.CompilationResult;
 import org.graalvm.compiler.core.common.spi.ForeignCallsProvider;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.hotspot.amd64.AMD64HotSpotBackend;
 import org.graalvm.compiler.lir.asm.CompilationResultBuilder;
 import org.graalvm.compiler.lir.asm.DataBuilder;
@@ -51,8 +53,8 @@ public class AMD64OptimizedCallTargetInstrumentationFactory extends OptimizedCal
 
     @Override
     public CompilationResultBuilder createBuilder(CodeCacheProvider codeCache, ForeignCallsProvider foreignCalls, FrameMap frameMap, Assembler asm, DataBuilder dataBuilder, FrameContext frameContext,
-                    OptionValues options, CompilationResult compilationResult) {
-        return new OptimizedCallTargetInstrumentation(codeCache, foreignCalls, frameMap, asm, dataBuilder, frameContext, options, compilationResult, config, registers) {
+                    OptionValues options, DebugContext debug, CompilationResult compilationResult) {
+        return new OptimizedCallTargetInstrumentation(codeCache, foreignCalls, frameMap, asm, dataBuilder, frameContext, options, debug, compilationResult, config, registers) {
             @Override
             protected void injectTailCallCode() {
                 @SuppressWarnings("hiding")
@@ -69,8 +71,11 @@ public class AMD64OptimizedCallTargetInstrumentationFactory extends OptimizedCal
                  */
                 asm.movq(spillRegister, codeBlobAddress, true);
                 assert asm.position() - pos >= AMD64HotSpotBackend.PATCHED_VERIFIED_ENTRY_POINT_INSTRUCTION_SIZE;
+                asm.membar(MemoryBarriers.JMM_POST_VOLATILE_READ);
                 asm.testq(spillRegister, spillRegister);
                 asm.jcc(ConditionFlag.Equal, doProlog);
+                asm.btrq(spillRegister, 0);
+                asm.jcc(ConditionFlag.CarryClear, doProlog);
                 asm.jmp(spillRegister);
 
                 asm.bind(doProlog);

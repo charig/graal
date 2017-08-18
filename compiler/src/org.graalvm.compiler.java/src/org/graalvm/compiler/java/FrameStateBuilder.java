@@ -46,7 +46,7 @@ import org.graalvm.compiler.core.common.GraalOptions;
 import org.graalvm.compiler.core.common.PermanentBailoutException;
 import org.graalvm.compiler.core.common.type.StampFactory;
 import org.graalvm.compiler.core.common.type.StampPair;
-import org.graalvm.compiler.debug.Debug;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.graph.NodeSourcePosition;
 import org.graalvm.compiler.java.BciBlockMapping.BciBlock;
 import org.graalvm.compiler.nodeinfo.Verbosity;
@@ -102,6 +102,7 @@ public final class FrameStateBuilder implements SideEffectsState {
     private final StructuredGraph graph;
     private final boolean clearNonLiveLocals;
     private FrameState outerFrameState;
+    private NodeSourcePosition outerSourcePosition;
 
     /**
      * The closest {@link StateSplit#hasSideEffect() side-effect} predecessors. There will be more
@@ -364,13 +365,12 @@ public final class FrameStateBuilder implements SideEffectsState {
             // Skip intrinsic frames
             parent = parser.getNonIntrinsicAncestor();
         }
-        return create(null, constantReceiver, bci, parent, hideSubstitutionStates);
+        return create(constantReceiver, bci, parent, hideSubstitutionStates);
     }
 
-    private NodeSourcePosition create(NodeSourcePosition o, JavaConstant receiver, int bci, BytecodeParser parent, boolean hideSubstitutionStates) {
-        NodeSourcePosition outer = o;
-        if (outer == null && parent != null) {
-            outer = parent.getFrameStateBuilder().createBytecodePosition(parent.bci(), hideSubstitutionStates);
+    private NodeSourcePosition create(JavaConstant receiver, int bci, BytecodeParser parent, boolean hideSubstitutionStates) {
+        if (outerSourcePosition == null && parent != null) {
+            outerSourcePosition = parent.getFrameStateBuilder().createBytecodePosition(parent.bci(), hideSubstitutionStates);
         }
         if (bci == BytecodeFrame.AFTER_EXCEPTION_BCI && parent != null) {
             return FrameState.toSourcePosition(outerFrameState);
@@ -378,7 +378,7 @@ public final class FrameStateBuilder implements SideEffectsState {
         if (bci == BytecodeFrame.INVALID_FRAMESTATE_BCI) {
             throw shouldNotReachHere();
         }
-        return new NodeSourcePosition(receiver, outer, code.getMethod(), bci);
+        return new NodeSourcePosition(receiver, outerSourcePosition, code.getMethod(), bci);
     }
 
     public FrameStateBuilder copy() {
@@ -503,48 +503,50 @@ public final class FrameStateBuilder implements SideEffectsState {
     }
 
     public void insertLoopProxies(LoopExitNode loopExit, FrameStateBuilder loopEntryState) {
+        DebugContext debug = graph.getDebug();
         for (int i = 0; i < localsSize(); i++) {
             ValueNode value = locals[i];
             if (value != null && value != TWO_SLOT_MARKER && (!loopEntryState.contains(value) || loopExit.loopBegin().isPhiAtMerge(value))) {
-                Debug.log(" inserting proxy for %s", value);
+                debug.log(" inserting proxy for %s", value);
                 locals[i] = ProxyNode.forValue(value, loopExit, graph);
             }
         }
         for (int i = 0; i < stackSize(); i++) {
             ValueNode value = stack[i];
             if (value != null && value != TWO_SLOT_MARKER && (!loopEntryState.contains(value) || loopExit.loopBegin().isPhiAtMerge(value))) {
-                Debug.log(" inserting proxy for %s", value);
+                debug.log(" inserting proxy for %s", value);
                 stack[i] = ProxyNode.forValue(value, loopExit, graph);
             }
         }
         for (int i = 0; i < lockedObjects.length; i++) {
             ValueNode value = lockedObjects[i];
             if (value != null && (!loopEntryState.contains(value) || loopExit.loopBegin().isPhiAtMerge(value))) {
-                Debug.log(" inserting proxy for %s", value);
+                debug.log(" inserting proxy for %s", value);
                 lockedObjects[i] = ProxyNode.forValue(value, loopExit, graph);
             }
         }
     }
 
     public void insertProxies(Function<ValueNode, ValueNode> proxyFunction) {
+        DebugContext debug = graph.getDebug();
         for (int i = 0; i < localsSize(); i++) {
             ValueNode value = locals[i];
             if (value != null && value != TWO_SLOT_MARKER) {
-                Debug.log(" inserting proxy for %s", value);
+                debug.log(" inserting proxy for %s", value);
                 locals[i] = proxyFunction.apply(value);
             }
         }
         for (int i = 0; i < stackSize(); i++) {
             ValueNode value = stack[i];
             if (value != null && value != TWO_SLOT_MARKER) {
-                Debug.log(" inserting proxy for %s", value);
+                debug.log(" inserting proxy for %s", value);
                 stack[i] = proxyFunction.apply(value);
             }
         }
         for (int i = 0; i < lockedObjects.length; i++) {
             ValueNode value = lockedObjects[i];
             if (value != null) {
-                Debug.log(" inserting proxy for %s", value);
+                debug.log(" inserting proxy for %s", value);
                 lockedObjects[i] = proxyFunction.apply(value);
             }
         }
@@ -996,14 +998,15 @@ public final class FrameStateBuilder implements SideEffectsState {
     }
 
     public void traceState() {
-        Debug.log("|   state [nr locals = %d, stack depth = %d, method = %s]", localsSize(), stackSize(), getMethod());
+        DebugContext debug = graph.getDebug();
+        debug.log("|   state [nr locals = %d, stack depth = %d, method = %s]", localsSize(), stackSize(), getMethod());
         for (int i = 0; i < localsSize(); ++i) {
             ValueNode value = locals[i];
-            Debug.log("|   local[%d] = %-8s : %s", i, value == null ? "bogus" : value == TWO_SLOT_MARKER ? "second" : value.getStackKind().getJavaName(), value);
+            debug.log("|   local[%d] = %-8s : %s", i, value == null ? "bogus" : value == TWO_SLOT_MARKER ? "second" : value.getStackKind().getJavaName(), value);
         }
         for (int i = 0; i < stackSize(); ++i) {
             ValueNode value = stack[i];
-            Debug.log("|   stack[%d] = %-8s : %s", i, value == null ? "bogus" : value == TWO_SLOT_MARKER ? "second" : value.getStackKind().getJavaName(), value);
+            debug.log("|   stack[%d] = %-8s : %s", i, value == null ? "bogus" : value == TWO_SLOT_MARKER ? "second" : value.getStackKind().getJavaName(), value);
         }
     }
 }

@@ -22,16 +22,14 @@
  */
 package org.graalvm.compiler.virtual.phases.ea;
 
-import static org.graalvm.api.word.LocationIdentity.any;
 import static org.graalvm.compiler.core.common.GraalOptions.ReadEliminationMaxLoopVisits;
+import static org.graalvm.word.LocationIdentity.any;
 
 import java.util.Iterator;
 import java.util.List;
 
-import org.graalvm.api.word.LocationIdentity;
 import org.graalvm.compiler.core.common.cfg.Loop;
 import org.graalvm.compiler.core.common.type.Stamp;
-import org.graalvm.compiler.debug.Debug;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.nodes.FieldLocationIdentity;
 import org.graalvm.compiler.nodes.FixedWithNextNode;
@@ -45,9 +43,9 @@ import org.graalvm.compiler.nodes.cfg.Block;
 import org.graalvm.compiler.nodes.cfg.ControlFlowGraph;
 import org.graalvm.compiler.nodes.extended.GuardedNode;
 import org.graalvm.compiler.nodes.extended.GuardingNode;
-import org.graalvm.compiler.nodes.extended.UnsafeAccessNode;
 import org.graalvm.compiler.nodes.extended.RawLoadNode;
 import org.graalvm.compiler.nodes.extended.RawStoreNode;
+import org.graalvm.compiler.nodes.extended.UnsafeAccessNode;
 import org.graalvm.compiler.nodes.java.AccessFieldNode;
 import org.graalvm.compiler.nodes.java.LoadFieldNode;
 import org.graalvm.compiler.nodes.java.StoreFieldNode;
@@ -59,10 +57,11 @@ import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.virtual.phases.ea.ReadEliminationBlockState.CacheEntry;
 import org.graalvm.compiler.virtual.phases.ea.ReadEliminationBlockState.LoadCacheEntry;
 import org.graalvm.compiler.virtual.phases.ea.ReadEliminationBlockState.UnsafeLoadCacheEntry;
-import org.graalvm.util.Equivalence;
 import org.graalvm.util.EconomicMap;
 import org.graalvm.util.EconomicSet;
+import org.graalvm.util.Equivalence;
 import org.graalvm.util.MapCursor;
+import org.graalvm.word.LocationIdentity;
 
 import jdk.vm.ci.meta.JavaKind;
 
@@ -72,9 +71,11 @@ import jdk.vm.ci.meta.JavaKind;
  * overlap.
  */
 public final class ReadEliminationClosure extends EffectsClosure<ReadEliminationBlockState> {
+    private final boolean considerGuards;
 
-    public ReadEliminationClosure(ControlFlowGraph cfg) {
+    public ReadEliminationClosure(ControlFlowGraph cfg, boolean considerGuards) {
         super(null, cfg);
+        this.considerGuards = considerGuards;
     }
 
     @Override
@@ -119,7 +120,7 @@ public final class ReadEliminationClosure extends EffectsClosure<ReadElimination
                 ValueNode object = GraphUtil.unproxify(read.getAddress());
                 LoadCacheEntry identifier = new LoadCacheEntry(object, read.getLocationIdentity());
                 ValueNode cachedValue = state.getCacheEntry(identifier);
-                if (cachedValue != null && areValuesReplaceable(read, cachedValue)) {
+                if (cachedValue != null && areValuesReplaceable(read, cachedValue, considerGuards)) {
                     effects.replaceAtUsages(read, cachedValue, read);
                     addScalarAlias(read, cachedValue);
                     deleted = true;
@@ -151,7 +152,7 @@ public final class ReadEliminationClosure extends EffectsClosure<ReadElimination
                     ValueNode object = GraphUtil.unproxify(load.object());
                     UnsafeLoadCacheEntry identifier = new UnsafeLoadCacheEntry(object, load.offset(), load.getLocationIdentity());
                     ValueNode cachedValue = state.getCacheEntry(identifier);
-                    if (cachedValue != null && areValuesReplaceable(load, cachedValue)) {
+                    if (cachedValue != null && areValuesReplaceable(load, cachedValue, considerGuards)) {
                         effects.replaceAtUsages(load, cachedValue, load);
                         addScalarAlias(load, cachedValue);
                         deleted = true;
@@ -189,9 +190,9 @@ public final class ReadEliminationClosure extends EffectsClosure<ReadElimination
         return deleted;
     }
 
-    private static boolean areValuesReplaceable(ValueNode originalValue, ValueNode replacementValue) {
+    private static boolean areValuesReplaceable(ValueNode originalValue, ValueNode replacementValue, boolean considerGuards) {
         return originalValue.stamp().isCompatible(replacementValue.stamp()) &&
-                        (getGuard(originalValue) == null || getGuard(originalValue) == getGuard(replacementValue));
+                        (!considerGuards || (getGuard(originalValue) == null || getGuard(originalValue) == getGuard(replacementValue)));
     }
 
     private static GuardingNode getGuard(ValueNode node) {
@@ -357,8 +358,8 @@ public final class ReadEliminationClosure extends EffectsClosure<ReadElimination
                     for (LocationIdentity location : forwardEndLiveLocations) {
                         loopKilledLocations.rememberLoopKilledLocation(location);
                     }
-                    if (Debug.isLogEnabled() && loopKilledLocations != null) {
-                        Debug.log("[Early Read Elimination] Setting loop killed locations of loop at node %s with %s",
+                    if (debug.isLogEnabled() && loopKilledLocations != null) {
+                        debug.log("[Early Read Elimination] Setting loop killed locations of loop at node %s with %s",
                                         loop.getHeader().getBeginNode(), forwardEndLiveLocations);
                     }
                 }

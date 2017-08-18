@@ -24,6 +24,7 @@
  */
 package com.oracle.truffle.nfi;
 
+import com.oracle.truffle.api.TruffleLanguage.ContextReference;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.interop.CanResolve;
@@ -39,21 +40,27 @@ class LibFFILibraryMessageResolution {
 
     abstract static class CachedLookupSymbolNode extends Node {
 
-        protected abstract LibFFISymbol executeLookup(LibFFILibrary receiver, String symbol);
+        private final ContextReference<NFIContext> ctxRef = NFILanguage.getCurrentContextReference();
+
+        protected abstract TruffleObject executeLookup(LibFFILibrary receiver, String symbol);
 
         @Specialization(guards = {"receiver == cachedReceiver", "symbol.equals(cachedSymbol)"})
         @SuppressWarnings("unused")
-        protected LibFFISymbol lookupCached(LibFFILibrary receiver, String symbol,
+        protected TruffleObject lookupCached(LibFFILibrary receiver, String symbol,
                         @Cached("receiver") LibFFILibrary cachedReceiver,
                         @Cached("symbol") String cachedSymbol,
-                        @Cached("lookup(cachedReceiver, cachedSymbol)") LibFFISymbol cachedRet) {
+                        @Cached("lookup(cachedReceiver, cachedSymbol)") TruffleObject cachedRet) {
             return cachedRet;
         }
 
         @Specialization(replaces = "lookupCached")
-        protected LibFFISymbol lookup(LibFFILibrary receiver, String symbol) {
+        protected TruffleObject lookup(LibFFILibrary receiver, String symbol) {
+            TruffleObject preBound = receiver.findSymbol(symbol);
+            if (preBound != null) {
+                return preBound;
+            }
             try {
-                return receiver.lookupSymbol(symbol);
+                return ctxRef.get().lookupSymbol(receiver, symbol);
             } catch (UnsatisfiedLinkError ex) {
                 throw UnknownIdentifierException.raise(symbol);
             }
@@ -65,7 +72,7 @@ class LibFFILibraryMessageResolution {
 
         @Child private CachedLookupSymbolNode cached = CachedLookupSymbolNodeGen.create();
 
-        public LibFFISymbol access(LibFFILibrary receiver, String symbol) {
+        public TruffleObject access(LibFFILibrary receiver, String symbol) {
             return cached.executeLookup(receiver, symbol);
         }
     }

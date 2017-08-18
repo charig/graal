@@ -27,6 +27,7 @@ package com.oracle.truffle.api.interop;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.TruffleLanguage.Env;
 import com.oracle.truffle.api.TruffleOptions;
@@ -466,7 +467,8 @@ public abstract class Message {
      * target} created for this message accepts a boolean argument specifying whether internal keys
      * should be included. Internal keys are extra property keys that are a part of the object, but
      * are not provided among ordinary keys. They may even not correspond to anything what is an
-     * explicit part of the guest language representation.
+     * explicit part of the guest language representation. An example of such internal values are
+     * internal slots in ECMAScript.
      * <p>
      * The return value from using this message is another {@link TruffleObject} that responds to
      * {@link #HAS_SIZE} message and its indexes 0 to {@link #GET_SIZE} - 1 contain {@link String}
@@ -577,6 +579,7 @@ public abstract class Message {
      * @since 0.8 or earlier
      */
     public final Node createNode() {
+        CompilerAsserts.neverPartOfCompilation();
         return InteropAccessNode.create(this);
     }
 

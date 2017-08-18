@@ -134,11 +134,17 @@ public class TruffleCompilerOptions {
     @Option(help = "Exclude assertion code from Truffle compilations", type = OptionType.Debug)
     public static final OptionKey<Boolean> TruffleExcludeAssertions = new OptionKey<>(true);
 
+    /**
+     * deprecated use {@link PolyglotCompilerOptions#CompilationThreshold} instead.
+     */
     @Option(help = "Compile call target when call count exceeds this threshold", type = OptionType.User)
     public static final OptionKey<Integer> TruffleCompilationThreshold = new OptionKey<>(1000);
 
+    /**
+     * deprecated use {@link PolyglotCompilerOptions#QueueTimeThreshold} instead.
+     */
     @Option(help = "Defines the maximum timespan in milliseconds that is required for a call target to be queued for compilation.", type = OptionType.User)
-    public static final OptionKey<Integer> TruffleTimeThreshold = new OptionKey<>(25000);
+    public static final OptionKey<Integer> TruffleTimeThreshold = new OptionKey<>(50000);
 
     @Option(help = "Minimum number of calls before a call target is compiled", type = OptionType.Expert)
     public static final OptionKey<Integer> TruffleMinInvokeThreshold = new OptionKey<>(3);
@@ -147,7 +153,7 @@ public class TruffleCompilerOptions {
     public static final OptionKey<Integer> TruffleInvalidationReprofileCount = new OptionKey<>(3);
 
     @Option(help = "Delay compilation after a node replacement", type = OptionType.Expert)
-    public static final OptionKey<Integer> TruffleReplaceReprofileCount = new OptionKey<>(10);
+    public static final OptionKey<Integer> TruffleReplaceReprofileCount = new OptionKey<>(3);
 
     @Option(help = "Enable automatic inlining of call targets", type = OptionType.Debug)
     public static final OptionKey<Boolean> TruffleFunctionInlining = new OptionKey<>(true);

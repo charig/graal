@@ -22,6 +22,7 @@
  */
 package org.graalvm.compiler.lir;
 
+import static jdk.vm.ci.code.ValueUtil.isStackSlot;
 import static org.graalvm.compiler.lir.LIRInstruction.OperandFlag.COMPOSITE;
 import static org.graalvm.compiler.lir.LIRInstruction.OperandFlag.CONST;
 import static org.graalvm.compiler.lir.LIRInstruction.OperandFlag.HINT;
@@ -34,7 +35,6 @@ import static org.graalvm.compiler.lir.LIRInstruction.OperandMode.ALIVE;
 import static org.graalvm.compiler.lir.LIRInstruction.OperandMode.DEF;
 import static org.graalvm.compiler.lir.LIRInstruction.OperandMode.TEMP;
 import static org.graalvm.compiler.lir.LIRValueUtil.isVirtualStackSlot;
-import static jdk.vm.ci.code.ValueUtil.isStackSlot;
 
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -44,13 +44,12 @@ import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.EnumSet;
 
-import org.graalvm.compiler.debug.Debug;
-import org.graalvm.compiler.debug.DebugCounter;
 import org.graalvm.compiler.graph.NodeSourcePosition;
 import org.graalvm.compiler.lir.StandardOp.LoadConstantOp;
 import org.graalvm.compiler.lir.StandardOp.MoveOp;
 import org.graalvm.compiler.lir.StandardOp.ValueMoveOp;
 import org.graalvm.compiler.lir.asm.CompilationResultBuilder;
+import org.graalvm.compiler.lir.gen.LIRGenerationResult;
 
 import jdk.vm.ci.code.RegisterValue;
 import jdk.vm.ci.code.StackSlot;
@@ -203,13 +202,10 @@ public abstract class LIRInstruction {
      */
     private NodeSourcePosition position;
 
-    private static final DebugCounter LIR_NODE_COUNT = Debug.counter("LIRNodes");
-
     /**
      * Constructs a new LIR instruction.
      */
     public LIRInstruction(LIRInstructionClass<? extends LIRInstruction> c) {
-        LIR_NODE_COUNT.increment();
         instructionClass = c;
         assert c.getClazz() == this.getClass();
         id = -1;
@@ -414,6 +410,20 @@ public abstract class LIRInstruction {
     public void verify() {
     }
 
+    /**
+     * Adds a comment to this instruction.
+     */
+    public final void setComment(LIRGenerationResult res, String comment) {
+        res.setComment(this, comment);
+    }
+
+    /**
+     * Gets the comment attached to this instruction.
+     */
+    public final String getComment(LIRGenerationResult res) {
+        return res.getComment(this);
+    }
+
     public final String toStringWithIdPrefix() {
         if (id != -1) {
             return String.format("%4d %s", id, toString());
@@ -424,6 +434,18 @@ public abstract class LIRInstruction {
     @Override
     public String toString() {
         return instructionClass.toString(this);
+    }
+
+    public String toString(LIRGenerationResult res) {
+        String toString = toString();
+        if (res == null) {
+            return toString;
+        }
+        String comment = getComment(res);
+        if (comment == null) {
+            return toString;
+        }
+        return String.format("%s // %s", toString, comment);
     }
 
     public LIRInstructionClass<?> getLIRInstructionClass() {

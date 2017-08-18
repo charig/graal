@@ -22,6 +22,8 @@
  */
 package org.graalvm.compiler.core;
 
+import org.graalvm.compiler.core.CompilationWrapper.ExceptionAction;
+import org.graalvm.compiler.options.EnumOptionKey;
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.options.OptionKey;
 import org.graalvm.compiler.options.OptionType;
@@ -32,22 +34,19 @@ import org.graalvm.compiler.options.OptionType;
 public class GraalCompilerOptions {
 
     // @formatter:off
-    @Option(help = "", type = OptionType.Debug)
-    public static final OptionKey<String> PrintFilter = new OptionKey<>(null);
-    @Option(help = "", type = OptionType.Debug)
+    @Option(help = "Print an informational line to the console for each completed compilation.", type = OptionType.Debug)
     public static final OptionKey<Boolean> PrintCompilation = new OptionKey<>(false);
-    @Option(help = "", type = OptionType.Debug)
-    public static final OptionKey<Boolean> PrintAfterCompilation = new OptionKey<>(false);
-    @Option(help = "", type = OptionType.Debug)
-    public static final OptionKey<Boolean> PrintBailout = new OptionKey<>(false);
-    @Option(help = "", type = OptionType.Debug)
-    public static final OptionKey<Boolean> ExitVMOnBailout = new OptionKey<>(false);
-    @Option(help = "", type = OptionType.Debug)
-    public static final OptionKey<Boolean> ExitVMOnException = new OptionKey<>(false);
-    @Option(help = "", type = OptionType.Debug)
-    public static final OptionKey<Boolean> PrintStackTraceOnException = new OptionKey<>(false);
     @Option(help = "Pattern (see MethodFilter for format) for method that will trigger an exception when compiled. " +
                    "This option exists to test handling compilation crashes gracefully.", type = OptionType.Debug)
     public static final OptionKey<String> CrashAt = new OptionKey<>(null);
+    @Option(help = "The action to take when compilation fails with a non-bailout exception.", type = OptionType.User)
+    public static final EnumOptionKey<ExceptionAction> CompilationFailureAction = new EnumOptionKey<>(ExceptionAction.Diagnose, ExceptionAction.HELP);
+    @Option(help = "The action to take when compilation fails with a bailout exception.", type = OptionType.User)
+    public static final EnumOptionKey<ExceptionAction> CompilationBailoutAction = new EnumOptionKey<>(ExceptionAction.Silent, ExceptionAction.HELP);
+    @Option(help = "The maximum number of compilation failures or bailouts to handle with the action specified " +
+                   "by CompilationFailureAction or CompilationBailoutAction before changing to a less verbose action.", type = OptionType.User)
+    public static final OptionKey<Integer> MaxCompilationProblemsPerAction = new OptionKey<>(5);
+    @Option(help = "Alias for CompilationFailureAction=ExitVM.", type = OptionType.User)
+    public static final OptionKey<Boolean> ExitVMOnException = new OptionKey<>(false);
     // @formatter:on
 }

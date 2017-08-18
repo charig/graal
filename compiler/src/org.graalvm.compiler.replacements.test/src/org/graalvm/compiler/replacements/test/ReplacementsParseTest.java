@@ -29,22 +29,46 @@ import java.util.function.Function;
 import org.graalvm.compiler.api.directives.GraalDirectives;
 import org.graalvm.compiler.api.replacements.ClassSubstitution;
 import org.graalvm.compiler.api.replacements.MethodSubstitution;
+import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
 import org.graalvm.compiler.bytecode.BytecodeProvider;
-import org.graalvm.compiler.debug.Debug;
-import org.graalvm.compiler.debug.DebugConfigScope;
+import org.graalvm.compiler.core.common.LIRKind;
+import org.graalvm.compiler.core.common.spi.ForeignCallDescriptor;
+import org.graalvm.compiler.core.common.spi.ForeignCallLinkage;
+import org.graalvm.compiler.core.common.spi.ForeignCallsProvider;
+import org.graalvm.compiler.core.common.type.Stamp;
+import org.graalvm.compiler.core.common.type.StampFactory;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.graph.GraalGraphError;
 import org.graalvm.compiler.graph.Node.ConstantNodeParameter;
 import org.graalvm.compiler.graph.Node.NodeIntrinsic;
+import org.graalvm.compiler.nodes.FrameState;
 import org.graalvm.compiler.nodes.PiNode;
 import org.graalvm.compiler.nodes.StructuredGraph;
+import org.graalvm.compiler.nodes.ValueNode;
+import org.graalvm.compiler.nodes.debug.OpaqueNode;
+import org.graalvm.compiler.nodes.extended.ForeignCallNode;
+import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderContext;
+import org.graalvm.compiler.nodes.graphbuilderconf.InlineInvokePlugin;
 import org.graalvm.compiler.nodes.graphbuilderconf.InvocationPlugin.Receiver;
 import org.graalvm.compiler.nodes.graphbuilderconf.InvocationPlugins;
 import org.graalvm.compiler.nodes.graphbuilderconf.InvocationPlugins.Registration;
+import org.graalvm.compiler.nodes.graphbuilderconf.NodeIntrinsicPluginFactory;
+import org.graalvm.compiler.nodes.spi.LoweringTool;
 import org.graalvm.compiler.options.OptionValues;
+import org.graalvm.compiler.phases.common.CanonicalizerPhase;
+import org.graalvm.compiler.phases.common.DeadCodeEliminationPhase;
+import org.graalvm.compiler.phases.common.FloatingReadPhase;
+import org.graalvm.compiler.phases.common.FrameStateAssignmentPhase;
+import org.graalvm.compiler.phases.common.GuardLoweringPhase;
+import org.graalvm.compiler.phases.common.LoweringPhase;
+import org.graalvm.compiler.phases.tiers.HighTierContext;
+import org.graalvm.word.LocationIdentity;
 import org.junit.Assert;
+import org.junit.BeforeClass;
 import org.junit.Test;
 
 import jdk.vm.ci.code.InstalledCode;
+import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 /**
@@ -53,6 +77,18 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 public class ReplacementsParseTest extends ReplacementsTest {
 
     private static final String IN_COMPILED_HANDLER_MARKER = "*** in compiled handler ***";
+
+    /**
+     * Marker value to indicate an exception handler was interpreted. We cannot use a complex string
+     * expression in this context without risking non-deterministic behavior dependent on whether
+     * String intrinsics are applied or whether String expression evaluation hit an uncommon trap
+     * when executed by C1 or C2 (and thus potentially altering the profile such that the exception
+     * handler is *not* compiled by Graal even when we want it to be).
+     */
+    private static final String IN_INTERPRETED_HANDLER_MARKER = "*** in interpreted handler ***";
+
+    private InlineInvokePlugin.InlineInfo inlineInvokeDecision;
+    private String inlineInvokeMethodName = null;
 
     @SuppressWarnings("serial")
     static class CustomError extends Error {
@@ -110,21 +146,21 @@ public class ReplacementsParseTest extends ReplacementsTest {
         final Object id;
 
         String stringizeId() {
-            String res = String.valueOf(id);
-            if (res.equals(THROW_EXCEPTION_MARKER.toString())) {
+            Object res = id;
+            if (res == THROW_EXCEPTION_MARKER) {
                 // Tests exception throwing from partial intrinsification
-                throw new CustomError("ex: " + id);
+                throw new CustomError("ex");
             }
-            return res;
+            return String.valueOf(res);
         }
 
         static String stringize(Object obj) {
-            String res = String.valueOf(obj);
-            if (res.equals(THROW_EXCEPTION_MARKER.toString())) {
+            Object res = obj;
+            if (res == THROW_EXCEPTION_MARKER) {
                 // Tests exception throwing from partial intrinsification
-                throw new CustomError("ex: " + obj);
+                throw new CustomError("ex");
             }
-            return res;
+            return String.valueOf(res);
         }
 
         static String identity(String s) {
@@ -143,6 +179,14 @@ public class ReplacementsParseTest extends ReplacementsTest {
          */
         static int copyFirstL2R(byte[] left, byte[] right) {
             return copyFirstL2RBody(left, right);
+        }
+
+        static int nonVoidIntrinsicWithCall(@SuppressWarnings("unused") int x, int y) {
+            return y;
+        }
+
+        static int nonVoidIntrinsicWithOptimizedSplit(int x) {
+            return x;
         }
     }
 
@@ -226,23 +270,58 @@ public class ReplacementsParseTest extends ReplacementsTest {
         private static String apply(Function<String, String> f, String value) {
             return f.apply(value);
         }
+
+        @MethodSubstitution(isStatic = true)
+        static int nonVoidIntrinsicWithCall(int x, int y) {
+            nonVoidIntrinsicWithCallStub(x);
+            return y;
+        }
+
+        @MethodSubstitution(isStatic = true)
+        static int nonVoidIntrinsicWithOptimizedSplit(int x) {
+            if (x == GraalDirectives.opaque(x)) {
+                nonVoidIntrinsicWithCallStub(x);
+            }
+            return x;
+        }
+
+        public static void nonVoidIntrinsicWithCallStub(int zLen) {
+            nonVoidIntrinsicWithCallStub(STUB_CALL, zLen);
+        }
+
+        static final ForeignCallDescriptor STUB_CALL = new ForeignCallDescriptor("stubCall", void.class, int.class);
+
+        @NodeIntrinsic(ForeignCallNode.class)
+        private static native void nonVoidIntrinsicWithCallStub(@ConstantNodeParameter ForeignCallDescriptor descriptor, int zLen);
+
     }
 
     @Override
     protected void registerInvocationPlugins(InvocationPlugins invocationPlugins) {
         BytecodeProvider replacementBytecodeProvider = getSystemClassLoaderBytecodeProvider();
         Registration r = new Registration(invocationPlugins, TestObject.class, replacementBytecodeProvider);
-        new PluginFactory_ReplacementsParseTest().registerPlugins(invocationPlugins, null);
+        NodeIntrinsicPluginFactory.InjectionProvider injections = new DummyInjectionProvider();
+        new PluginFactory_ReplacementsParseTest().registerPlugins(invocationPlugins, injections);
         r.registerMethodSubstitution(TestObjectSubstitutions.class, "nextAfter", double.class, double.class);
         r.registerMethodSubstitution(TestObjectSubstitutions.class, "stringize", Object.class);
         r.registerMethodSubstitution(TestObjectSubstitutions.class, "stringizeId", Receiver.class);
         r.registerMethodSubstitution(TestObjectSubstitutions.class, "copyFirst", byte[].class, byte[].class, boolean.class);
         r.registerMethodSubstitution(TestObjectSubstitutions.class, "copyFirstL2R", byte[].class, byte[].class);
+        r.registerMethodSubstitution(TestObjectSubstitutions.class, "nonVoidIntrinsicWithCall", int.class, int.class);
+        r.registerMethodSubstitution(TestObjectSubstitutions.class, "nonVoidIntrinsicWithOptimizedSplit", int.class);
 
         if (replacementBytecodeProvider.supportsInvokedynamic()) {
             r.registerMethodSubstitution(TestObjectSubstitutions.class, "identity", String.class);
         }
         super.registerInvocationPlugins(invocationPlugins);
+    }
+
+    @BeforeClass
+    public static void warmupProfiles() {
+        for (int i = 0; i < 40000; i++) {
+            callCopyFirst(new byte[16], new byte[16], true);
+            callCopyFirstL2R(new byte[16], new byte[16]);
+        }
     }
 
     /**
@@ -316,8 +395,8 @@ public class ReplacementsParseTest extends ReplacementsTest {
         // is executed before this test
         getResolvedJavaMethod("callStringize").reprofile();
         forceCompileOverride = true;
-        String standardReturnValue = new CustomError("ex: " + THROW_EXCEPTION_MARKER).toString();
-        String compiledReturnValue = new CustomError("ex: " + THROW_EXCEPTION_MARKER) + IN_COMPILED_HANDLER_MARKER;
+        String standardReturnValue = IN_INTERPRETED_HANDLER_MARKER;
+        String compiledReturnValue = IN_COMPILED_HANDLER_MARKER;
         testWithDifferentReturnValues(getInitialOptions(), standardReturnValue, compiledReturnValue, "callStringize", THROW_EXCEPTION_MARKER);
     }
 
@@ -326,14 +405,17 @@ public class ReplacementsParseTest extends ReplacementsTest {
         OptionValues options = new OptionValues(getInitialOptions(), InlinePartialIntrinsicExitDuringParsing, false);
         test(options, "callStringize", "a string");
         test(options, "callStringize", Boolean.TRUE);
-        String standardReturnValue = new CustomError("ex: " + THROW_EXCEPTION_MARKER).toString();
-        String compiledReturnValue = new CustomError("ex: " + THROW_EXCEPTION_MARKER) + IN_COMPILED_HANDLER_MARKER;
-        for (int i = 0; i < 1000; i++) {
-            // Ensures 'exception seen' bit is set for call to stringize
-            callStringize(THROW_EXCEPTION_MARKER);
-        }
+        String standardReturnValue = IN_INTERPRETED_HANDLER_MARKER;
+        String compiledReturnValue = IN_COMPILED_HANDLER_MARKER;
         forceCompileOverride = true;
-        testWithDifferentReturnValues(options, standardReturnValue, compiledReturnValue, "callStringize", THROW_EXCEPTION_MARKER);
+        inlineInvokeDecision = InlineInvokePlugin.InlineInfo.DO_NOT_INLINE_WITH_EXCEPTION;
+        inlineInvokeMethodName = "stringizeId";
+        try {
+            testWithDifferentReturnValues(options, standardReturnValue, compiledReturnValue, "callStringize", THROW_EXCEPTION_MARKER);
+        } finally {
+            inlineInvokeDecision = null;
+            inlineInvokeMethodName = null;
+        }
     }
 
     @Test
@@ -344,8 +426,8 @@ public class ReplacementsParseTest extends ReplacementsTest {
         // is executed before this test
         getResolvedJavaMethod("callStringize").reprofile();
         forceCompileOverride = true;
-        String standardReturnValue = new CustomError("ex: " + THROW_EXCEPTION_MARKER).toString();
-        String compiledReturnValue = new CustomError("ex: " + THROW_EXCEPTION_MARKER) + IN_COMPILED_HANDLER_MARKER;
+        String standardReturnValue = IN_INTERPRETED_HANDLER_MARKER;
+        String compiledReturnValue = IN_COMPILED_HANDLER_MARKER;
         testWithDifferentReturnValues(getInitialOptions(), standardReturnValue, compiledReturnValue, "callStringizeId", new TestObject(THROW_EXCEPTION_MARKER));
     }
 
@@ -355,14 +437,17 @@ public class ReplacementsParseTest extends ReplacementsTest {
         test(options, "callStringizeId", new TestObject("a string"));
         test(options, "callStringizeId", new TestObject(Boolean.TRUE));
         TestObject exceptionTestObject = new TestObject(THROW_EXCEPTION_MARKER);
-        for (int i = 0; i < 1000; i++) {
-            // Ensures 'exception seen' bit is set for call to stringizeId
-            callStringizeId(exceptionTestObject);
-        }
-        String standardReturnValue = new CustomError("ex: " + THROW_EXCEPTION_MARKER).toString();
-        String compiledReturnValue = new CustomError("ex: " + THROW_EXCEPTION_MARKER) + IN_COMPILED_HANDLER_MARKER;
+        String standardReturnValue = IN_INTERPRETED_HANDLER_MARKER;
+        String compiledReturnValue = IN_COMPILED_HANDLER_MARKER;
         forceCompileOverride = true;
-        testWithDifferentReturnValues(options, standardReturnValue, compiledReturnValue, "callStringizeId", exceptionTestObject);
+        inlineInvokeDecision = InlineInvokePlugin.InlineInfo.DO_NOT_INLINE_WITH_EXCEPTION;
+        inlineInvokeMethodName = "stringizeId";
+        try {
+            testWithDifferentReturnValues(options, standardReturnValue, compiledReturnValue, "callStringizeId", exceptionTestObject);
+        } finally {
+            inlineInvokeDecision = null;
+            inlineInvokeMethodName = null;
+        }
     }
 
     public static Object callStringize(Object obj) {
@@ -370,9 +455,9 @@ public class ReplacementsParseTest extends ReplacementsTest {
             return TestObject.stringize(obj);
         } catch (CustomError e) {
             if (GraalDirectives.inCompiledCode()) {
-                return e + IN_COMPILED_HANDLER_MARKER;
+                return IN_COMPILED_HANDLER_MARKER;
             }
-            return e.toString();
+            return IN_INTERPRETED_HANDLER_MARKER;
         }
     }
 
@@ -381,9 +466,9 @@ public class ReplacementsParseTest extends ReplacementsTest {
             return testObj.stringizeId();
         } catch (CustomError e) {
             if (GraalDirectives.inCompiledCode()) {
-                return e + IN_COMPILED_HANDLER_MARKER;
+                return IN_COMPILED_HANDLER_MARKER;
             }
-            return e.toString();
+            return IN_INTERPRETED_HANDLER_MARKER;
         }
     }
 
@@ -414,6 +499,10 @@ public class ReplacementsParseTest extends ReplacementsTest {
         return res;
     }
 
+    public static int callCopyFirstWrapper(byte[] in, byte[] out, boolean left2right) {
+        return callCopyFirst(in, out, left2right);
+    }
+
     public static int callCopyFirstL2R(byte[] in, byte[] out) {
         int res = TestObject.copyFirstL2R(in, out);
         if (res == 17) {
@@ -437,11 +526,135 @@ public class ReplacementsParseTest extends ReplacementsTest {
         byte[] in = {0, 1, 2, 3, 4};
         byte[] out = new byte[in.length];
         try {
-            try (DebugConfigScope s = Debug.setConfig(Debug.silentConfig())) {
-                test("callCopyFirstL2R", in, out);
-            }
+            test("callCopyFirstL2R", in, out);
         } catch (GraalGraphError e) {
             assertTrue(e.getMessage().startsWith("Invalid frame state"));
+        }
+    }
+
+    @Override
+    protected InlineInvokePlugin.InlineInfo bytecodeParserShouldInlineInvoke(GraphBuilderContext b, ResolvedJavaMethod method, ValueNode[] args) {
+        if (inlineInvokeMethodName == null || inlineInvokeMethodName.equals(method.getName())) {
+            return inlineInvokeDecision;
+        }
+        return null;
+    }
+
+    @Test
+    public void testCallCopyFirstWithoutInlinePartialIntrinsicExit() {
+        OptionValues options = new OptionValues(getInitialOptions(), InlinePartialIntrinsicExitDuringParsing, false);
+        inlineInvokeDecision = InlineInvokePlugin.InlineInfo.DO_NOT_INLINE_WITH_EXCEPTION;
+        try {
+            byte[] in = {0, 1, 2, 3, 4};
+            byte[] out = new byte[in.length];
+            test(options, "callCopyFirstWrapper", in, out, true);
+            test(options, "callCopyFirstWrapper", in, out, false);
+        } finally {
+            inlineInvokeDecision = null;
+        }
+    }
+
+    public static int nonVoidIntrinsicWithCall(int x, int y) {
+        if (TestObject.nonVoidIntrinsicWithCall(x, y) == x) {
+            GraalDirectives.deoptimize();
+        }
+        return y;
+    }
+
+    /**
+     * This tests the case where an intrinsic ends with a runtime call but returns some kind of
+     * value. This requires that a FrameState is available after the {@link ForeignCallNode} since
+     * the return value must be computed on return from the call.
+     */
+    @Test
+    public void testNonVoidIntrinsicWithCall() {
+        testGraph("nonVoidIntrinsicWithCall");
+    }
+
+    public static int nonVoidIntrinsicWithOptimizedSplit(int x) {
+        if (TestObject.nonVoidIntrinsicWithOptimizedSplit(x) == x) {
+            GraalDirectives.deoptimize();
+        }
+        return x;
+    }
+
+    /**
+     * This is similar to {@link #testNonVoidIntrinsicWithCall()} but has a merge after the call
+     * which would normally capture the {@link FrameState} but in this case we force the merge to be
+     * optimized away.
+     */
+    @Test
+    public void testNonVoidIntrinsicWithOptimizedSplit() {
+        testGraph("nonVoidIntrinsicWithOptimizedSplit");
+    }
+
+    @SuppressWarnings("try")
+    private void testGraph(String name) {
+        StructuredGraph graph = parseEager(name, StructuredGraph.AllowAssumptions.YES);
+        try (DebugContext.Scope s0 = graph.getDebug().scope(name, graph)) {
+            for (OpaqueNode node : graph.getNodes().filter(OpaqueNode.class)) {
+                node.replaceAndDelete(node.getValue());
+            }
+            HighTierContext context = getDefaultHighTierContext();
+            CanonicalizerPhase canonicalizer = new CanonicalizerPhase();
+            new LoweringPhase(canonicalizer, LoweringTool.StandardLoweringStage.HIGH_TIER).apply(graph, context);
+            new FloatingReadPhase().apply(graph);
+            canonicalizer.apply(graph, context);
+            new DeadCodeEliminationPhase().apply(graph);
+            new GuardLoweringPhase().apply(graph, getDefaultMidTierContext());
+            new FrameStateAssignmentPhase().apply(graph);
+        } catch (Throwable e) {
+            throw graph.getDebug().handle(e);
+        }
+    }
+
+    private class DummyInjectionProvider implements NodeIntrinsicPluginFactory.InjectionProvider {
+        @SuppressWarnings("unchecked")
+        @Override
+        public <T> T getInjectedArgument(Class<T> type) {
+            if (type == ForeignCallsProvider.class) {
+                return (T) new ForeignCallsProvider() {
+                    @Override
+                    public LIRKind getValueKind(JavaKind javaKind) {
+                        return null;
+                    }
+
+                    @Override
+                    public boolean isReexecutable(ForeignCallDescriptor descriptor) {
+                        return false;
+                    }
+
+                    @Override
+                    public LocationIdentity[] getKilledLocations(ForeignCallDescriptor descriptor) {
+                        return new LocationIdentity[0];
+                    }
+
+                    @Override
+                    public boolean canDeoptimize(ForeignCallDescriptor descriptor) {
+                        return false;
+                    }
+
+                    @Override
+                    public boolean isGuaranteedSafepoint(ForeignCallDescriptor descriptor) {
+                        return false;
+                    }
+
+                    @Override
+                    public ForeignCallLinkage lookupForeignCall(ForeignCallDescriptor descriptor) {
+                        return null;
+                    }
+                };
+            }
+            if (type == SnippetReflectionProvider.class) {
+                return (T) getSnippetReflection();
+            }
+            return null;
+        }
+
+        @Override
+        public Stamp getInjectedStamp(Class<?> type, boolean nonNull) {
+            JavaKind kind = JavaKind.fromJavaClass(type);
+            return StampFactory.forKind(kind);
         }
     }
 }

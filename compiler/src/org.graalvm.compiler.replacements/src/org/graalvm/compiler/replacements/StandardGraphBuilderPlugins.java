@@ -36,7 +36,6 @@ import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.util.Arrays;
 
-import org.graalvm.api.word.LocationIdentity;
 import org.graalvm.compiler.api.directives.GraalDirectives;
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
 import org.graalvm.compiler.bytecode.BytecodeProvider;
@@ -101,6 +100,7 @@ import org.graalvm.compiler.replacements.nodes.VirtualizableInvokeMacroNode;
 import org.graalvm.compiler.replacements.nodes.arithmetic.IntegerAddExactNode;
 import org.graalvm.compiler.replacements.nodes.arithmetic.IntegerMulExactNode;
 import org.graalvm.compiler.replacements.nodes.arithmetic.IntegerSubExactNode;
+import org.graalvm.word.LocationIdentity;
 
 import jdk.vm.ci.meta.DeoptimizationAction;
 import jdk.vm.ci.meta.DeoptimizationReason;
@@ -248,7 +248,13 @@ public class StandardGraphBuilderPlugins {
 
         for (JavaKind kind : new JavaKind[]{JavaKind.Int, JavaKind.Long, JavaKind.Object}) {
             Class<?> javaClass = kind == JavaKind.Object ? Object.class : kind.toJavaClass();
-            r.register5("compareAndSwap" + kind.name(), Receiver.class, Object.class, long.class, javaClass, javaClass, new InvocationPlugin() {
+            String casName;
+            if (Java8OrEarlier) {
+                casName = "compareAndSwap";
+            } else {
+                casName = "compareAndSet";
+            }
+            r.register5(casName + kind.name(), Receiver.class, Object.class, long.class, javaClass, javaClass, new InvocationPlugin() {
                 @Override
                 public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver unsafe, ValueNode object, ValueNode offset, ValueNode expected, ValueNode x) {
                     // Emits a null-check for the otherwise unused receiver
@@ -429,11 +435,11 @@ public class StandardGraphBuilderPlugins {
         }
 
         @Override
-        public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, InvocationPlugin.Receiver receiver, ValueNode arg1, ValueNode arg2, ValueNode arg3, ValueNode arg4,
-                        ValueNode arg5, ValueNode arg6, ValueNode arg7) {
-            if (arg3.isConstant()) {
-                b.addPush(JavaKind.Int,
-                                new StringIndexOfNode(b.getInvokeKind(), targetMethod, b.bci(), b.getInvokeReturnStamp(b.getAssumptions()), arg1, arg2, arg3, arg4, arg5, arg6, arg7));
+        public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, InvocationPlugin.Receiver receiver, ValueNode source, ValueNode sourceOffset, ValueNode sourceCount,
+                        ValueNode target, ValueNode targetOffset, ValueNode targetCount, ValueNode origFromIndex) {
+            if (target.isConstant()) {
+                b.addPush(JavaKind.Int, new StringIndexOfNode(b.getInvokeKind(), targetMethod, b.bci(), b.getInvokeReturnStamp(b.getAssumptions()), source, sourceOffset, sourceCount,
+                                target, targetOffset, targetCount, origFromIndex));
                 return true;
             }
             return false;

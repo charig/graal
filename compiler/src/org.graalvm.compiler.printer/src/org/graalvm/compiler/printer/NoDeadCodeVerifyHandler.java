@@ -26,9 +26,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.DebugVerifyHandler;
 import org.graalvm.compiler.debug.GraalError;
-import org.graalvm.compiler.debug.internal.DebugScope;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.options.Option;
@@ -63,8 +63,8 @@ public class NoDeadCodeVerifyHandler implements DebugVerifyHandler {
     private static final Map<String, Boolean> discovered = new ConcurrentHashMap<>();
 
     @Override
-    public void verify(Object object, String message) {
-        OptionValues options = DebugScope.getConfig().getOptions();
+    public void verify(DebugContext debug, Object object, String format, Object... args) {
+        OptionValues options = debug.getOptions();
         if (Options.NDCV.getValue(options) != OFF && object instanceof StructuredGraph) {
             StructuredGraph graph = (StructuredGraph) object;
             List<Node> before = graph.getNodes().snapshot();
@@ -72,9 +72,9 @@ public class NoDeadCodeVerifyHandler implements DebugVerifyHandler {
             List<Node> after = graph.getNodes().snapshot();
             assert after.size() <= before.size();
             if (before.size() != after.size()) {
-                if (discovered.put(message, Boolean.TRUE) == null) {
+                if (discovered.put(format, Boolean.TRUE) == null) {
                     before.removeAll(after);
-                    String prefix = message == null ? "" : message + ": ";
+                    String prefix = format == null ? "" : format + ": ";
                     GraalError error = new GraalError("%sfound dead nodes in %s: %s", prefix, graph, before);
                     if (Options.NDCV.getValue(options) == INFO) {
                         System.out.println(error.getMessage());

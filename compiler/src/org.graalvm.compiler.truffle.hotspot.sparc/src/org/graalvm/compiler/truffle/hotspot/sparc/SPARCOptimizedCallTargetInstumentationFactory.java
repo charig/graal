@@ -31,13 +31,16 @@ import jdk.vm.ci.code.CodeCacheProvider;
 import jdk.vm.ci.code.InstalledCode;
 import jdk.vm.ci.code.Register;
 
+import jdk.vm.ci.sparc.SPARC;
 import org.graalvm.compiler.asm.Assembler;
 import org.graalvm.compiler.asm.Label;
 import org.graalvm.compiler.asm.sparc.SPARCAddress;
+import org.graalvm.compiler.asm.sparc.SPARCAssembler;
 import org.graalvm.compiler.asm.sparc.SPARCMacroAssembler;
 import org.graalvm.compiler.asm.sparc.SPARCMacroAssembler.ScratchRegister;
 import org.graalvm.compiler.code.CompilationResult;
 import org.graalvm.compiler.core.common.spi.ForeignCallsProvider;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.lir.asm.CompilationResultBuilder;
 import org.graalvm.compiler.lir.asm.DataBuilder;
 import org.graalvm.compiler.lir.asm.FrameContext;
@@ -52,8 +55,8 @@ public class SPARCOptimizedCallTargetInstumentationFactory extends OptimizedCall
 
     @Override
     public CompilationResultBuilder createBuilder(CodeCacheProvider codeCache, ForeignCallsProvider foreignCalls, FrameMap frameMap, Assembler asm, DataBuilder dataBuilder, FrameContext frameContext,
-                    OptionValues options, CompilationResult compilationResult) {
-        return new OptimizedCallTargetInstrumentation(codeCache, foreignCalls, frameMap, asm, dataBuilder, frameContext, options, compilationResult, config, registers) {
+                    OptionValues options, DebugContext debug, CompilationResult compilationResult) {
+        return new OptimizedCallTargetInstrumentation(codeCache, foreignCalls, frameMap, asm, dataBuilder, frameContext, options, debug, compilationResult, config, registers) {
             @Override
             protected void injectTailCallCode() {
                 @SuppressWarnings("hiding")
@@ -65,7 +68,11 @@ public class SPARCOptimizedCallTargetInstumentationFactory extends OptimizedCall
                     SPARCAddress entryPointAddress = new SPARCAddress(thisRegister, getFieldOffset("entryPoint", InstalledCode.class));
 
                     asm.ldx(entryPointAddress, spillRegister);
+                    asm.membar(SPARCAssembler.MEMBAR_LOAD_LOAD | SPARCAssembler.MEMBAR_LOAD_STORE);
                     asm.compareBranch(spillRegister, 0, Equal, Xcc, doProlog, PREDICT_NOT_TAKEN, null);
+                    asm.andcc(spillRegister, 1, SPARC.g0);
+                    asm.bz(doProlog);
+                    asm.xor(spillRegister, 1, spillRegister);
                     asm.jmp(spillRegister);
                     asm.nop();
                     asm.bind(doProlog);

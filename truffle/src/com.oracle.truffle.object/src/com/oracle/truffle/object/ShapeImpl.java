@@ -75,7 +75,6 @@ import com.oracle.truffle.object.Transition.ShareShapeTransition;
  * @see Locations
  * @since 0.17 or earlier
  */
-@SuppressWarnings("deprecation")
 public abstract class ShapeImpl extends Shape {
     private final int id;
 
@@ -88,7 +87,6 @@ public abstract class ShapeImpl extends Shape {
     /** @since 0.17 or earlier */
     protected final PropertyMap propertyMap;
 
-    private final Object extraData;
     private final Object sharedData;
     private final ShapeImpl root;
 
@@ -177,7 +175,6 @@ public abstract class ShapeImpl extends Shape {
         this.id = id;
         this.transitionFromParent = transitionFromParent;
         this.sharedData = sharedData;
-        this.extraData = objectType.createShapeData(this);
 
         shapeCount.inc();
         if (ObjectStorageOptions.DumpShapes) {
@@ -303,6 +300,7 @@ public abstract class ShapeImpl extends Shape {
         addTransitionInternal(transition, next);
     }
 
+    @SuppressWarnings("unchecked")
     private void addTransitionInternal(Transition transition, ShapeImpl successor) {
         Object prev;
         Object next;
@@ -312,7 +310,6 @@ public abstract class ShapeImpl extends Shape {
                 invalidateLeafAssumption();
                 next = new AbstractMap.SimpleImmutableEntry<>(transition, successor);
             } else if (prev instanceof Map.Entry<?, ?>) {
-                @SuppressWarnings("unchecked")
                 Map.Entry<Transition, ShapeImpl> entry = (Map.Entry<Transition, ShapeImpl>) prev;
                 ConcurrentHashMap<Transition, ShapeImpl> map = new ConcurrentHashMap<>();
                 map.put(entry.getKey(), entry.getValue());
@@ -320,7 +317,6 @@ public abstract class ShapeImpl extends Shape {
                 next = map;
             } else {
                 assert prev instanceof Map<?, ?>;
-                @SuppressWarnings("unchecked")
                 Map<Transition, ShapeImpl> map = (Map<Transition, ShapeImpl>) prev;
                 map.put(transition, successor);
                 break;
@@ -329,28 +325,27 @@ public abstract class ShapeImpl extends Shape {
     }
 
     /** @since 0.17 or earlier */
+    @SuppressWarnings("unchecked")
     public final Map<Transition, ShapeImpl> getTransitionMapForRead() {
         Object trans = transitionMap;
         if (trans == null) {
             return Collections.<Transition, ShapeImpl> emptyMap();
         } else if (trans instanceof Map.Entry<?, ?>) {
-            @SuppressWarnings("unchecked")
             Map.Entry<Transition, ShapeImpl> entry = (Map.Entry<Transition, ShapeImpl>) trans;
             return Collections.singletonMap(entry.getKey(), entry.getValue());
         } else {
             assert trans instanceof Map<?, ?>;
-            @SuppressWarnings("unchecked")
             Map<Transition, ShapeImpl> map = (Map<Transition, ShapeImpl>) trans;
             return map;
         }
     }
 
+    @SuppressWarnings("unchecked")
     private ShapeImpl queryTransitionImpl(Transition transition) {
         Object trans = transitionMap;
         if (trans == null) {
             return null;
         } else if (trans instanceof Map.Entry<?, ?>) {
-            @SuppressWarnings("unchecked")
             Map.Entry<Transition, ShapeImpl> entry = (Map.Entry<Transition, ShapeImpl>) trans;
             if (entry.getKey().equals(transition)) {
                 return entry.getValue();
@@ -359,7 +354,6 @@ public abstract class ShapeImpl extends Shape {
             }
         } else {
             assert trans instanceof Map<?, ?>;
-            @SuppressWarnings("unchecked")
             Map<Transition, ShapeImpl> map = (Map<Transition, ShapeImpl>) trans;
             return map.get(transition);
         }
@@ -824,13 +818,6 @@ public abstract class ShapeImpl extends Shape {
     }
 
     /** @since 0.17 or earlier */
-    @Deprecated
-    @Override
-    public final Object getData() {
-        return extraData;
-    }
-
-    /** @since 0.17 or earlier */
     @Override
     public final Object getSharedData() {
         return sharedData;
@@ -939,6 +926,8 @@ public abstract class ShapeImpl extends Shape {
     }
 
     /** @since 0.17 or earlier */
+    @SuppressWarnings("all")
+    @Deprecated
     public <R> R accept(ShapeVisitor<R> visitor) {
         return visitor.visitShape(this);
     }

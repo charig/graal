@@ -35,11 +35,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import org.graalvm.options.OptionDescriptor;
+import org.graalvm.options.OptionDescriptors;
+import org.graalvm.options.OptionValues;
+
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.InstrumentInfo;
+import com.oracle.truffle.api.Option;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleRuntime;
 import com.oracle.truffle.api.instrumentation.InstrumentationHandler.AccessorInstrumentHandler;
+import com.oracle.truffle.api.instrumentation.InstrumentationHandler.InstrumentClientInstrumenter;
 import com.oracle.truffle.api.nodes.LanguageInfo;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
@@ -140,6 +146,33 @@ public abstract class TruffleInstrument {
     }
 
     /**
+     * @since 0.27
+     * @deprecated in 0.27 use {@link #getOptionDescriptors()} instead.
+     */
+    @Deprecated
+    protected List<OptionDescriptor> describeOptions() {
+        return null;
+    }
+
+    /**
+     * Returns a set of option descriptors that are supported by this instrument. Option values are
+     * accessible using the {@link Env#getOptions() environment} when the instrument is
+     * {@link #onCreate(Env) created}. By default no options are available for an instrument.
+     * Options returned by this method must specify the {@link Registration#id() instrument id} as
+     * {@link OptionDescriptor#getName() name} prefix for each option. For example if the id of the
+     * instrument is "debugger" then a valid option name would be "debugger.Enabled". The instrument
+     * will automatically be {@link #onCreate(Env) created} if one of the specified options was
+     * provided by the engine. To construct option descriptors from a list then
+     * {@link OptionDescriptors#create(List)} can be used.
+     *
+     * @see Option For an example of declaring the option descriptor using an annotation.
+     * @since 0.27
+     */
+    protected OptionDescriptors getOptionDescriptors() {
+        return OptionDescriptors.create(describeOptions());
+    }
+
+    /**
      * Access to instrumentation services as well as input, output, and error streams.
      *
      * @since 0.12
@@ -148,15 +181,15 @@ public abstract class TruffleInstrument {
     public static final class Env {
 
         private final Object vmObject; // PolyglotRuntime.Instrument
-        private final Instrumenter instrumenter;
         private final InputStream in;
         private final OutputStream err;
         private final OutputStream out;
+        OptionValues options;
+        InstrumentClientInstrumenter instrumenter;
         private List<Object> services;
 
-        Env(Object vm, Instrumenter instrumenter, OutputStream out, OutputStream err, InputStream in) {
+        Env(Object vm, OutputStream out, OutputStream err, InputStream in) {
             this.vmObject = vm;
-            this.instrumenter = instrumenter;
             this.in = in;
             this.err = err;
             this.out = out;
@@ -266,8 +299,8 @@ public abstract class TruffleInstrument {
         }
 
         /**
-         * Returns a map mime-type to language identifier of all languages that are installed in the
-         * environment.
+         * Returns a map {@link LanguageInfo#getId() language id} to {@link LanguageInfo language
+         * info} of all languages that are installed in the environment.
          *
          * @since 0.26
          */
@@ -276,8 +309,8 @@ public abstract class TruffleInstrument {
         }
 
         /**
-         * Returns a map mime-type to instrument identifier of all instruments that are installed in
-         * the environment.
+         * Returns a map {@link InstrumentInfo#getId() instrument id} to {@link InstrumentInfo
+         * instrument info} of all instruments that are installed in the environment.
          *
          * @since 0.26
          */
@@ -294,6 +327,17 @@ public abstract class TruffleInstrument {
                 services = null;
             }
             return arr.toArray();
+        }
+
+        /**
+         * Returns option values for the options described in
+         * {@link TruffleLanguage#getOptionDescriptors()}. The returned options are never
+         * <code>null</code>.
+         *
+         * @since 0.27
+         */
+        public OptionValues getOptions() {
+            return options;
         }
 
         /**
@@ -339,9 +383,29 @@ public abstract class TruffleInstrument {
          * @param value a known value of that language
          * @return a human readable string representation of the value.
          * @since 0.17
+         * @deprecated use
+         *             {@link #toString(com.oracle.truffle.api.nodes.LanguageInfo, java.lang.Object)}
+         *             and retrieve {@link LanguageInfo} from
+         *             <code>node.getRootNode().getLanguageInfo()</code>.
          */
+        @Deprecated
         public String toString(Node node, Object value) {
             final TruffleLanguage.Env env = getLangEnv(node);
+            return AccessorInstrumentHandler.langAccess().toStringIfVisible(env, value, false);
+        }
+
+        /**
+         * Uses the provided language to print a string representation of this value. The behavior
+         * of this method is undefined if a type unknown to the language is passed as a value.
+         *
+         * @param language a language
+         * @param value a known value of that language
+         * @return a human readable string representation of the value.
+         * @see #findLanguage(java.lang.Object)
+         * @since 0.27
+         */
+        public String toString(LanguageInfo language, Object value) {
+            final TruffleLanguage.Env env = AccessorInstrumentHandler.engineAccess().getEnvForInstrument(language);
             return AccessorInstrumentHandler.langAccess().toStringIfVisible(env, value, false);
         }
 
@@ -355,9 +419,33 @@ public abstract class TruffleInstrument {
          * @param value a value to find the meta-object of
          * @return the meta-object, or <code>null</code>
          * @since 0.22
+         * @deprecated use
+         *             {@link #findMetaObject(com.oracle.truffle.api.nodes.LanguageInfo, java.lang.Object)}
+         *             and retrieve {@link LanguageInfo} from
+         *             <code>node.getRootNode().getLanguageInfo()</code>.
          */
+        @Deprecated
         public Object findMetaObject(Node node, Object value) {
             final TruffleLanguage.Env env = getLangEnv(node);
+            return AccessorInstrumentHandler.langAccess().findMetaObject(env, value);
+        }
+
+        /**
+         * Uses the provided language to find a meta-object of a value, if any. The meta-object
+         * represents a description of the object, reveals it's kind and it's features. Some
+         * information that a meta-object might define includes the base object's type, interface,
+         * class, methods, attributes, etc. When no meta-object is known, <code>null</code> is
+         * returned. For the best results, use the {@link #findLanguage(java.lang.Object) value's
+         * language}, if any.
+         *
+         * @param language a language
+         * @param value a value to find the meta-object of
+         * @return the meta-object, or <code>null</code>
+         * @see #findLanguage(java.lang.Object)
+         * @since 0.27
+         */
+        public Object findMetaObject(LanguageInfo language, Object value) {
+            final TruffleLanguage.Env env = AccessorInstrumentHandler.engineAccess().getEnvForInstrument(language);
             return AccessorInstrumentHandler.langAccess().findMetaObject(env, value);
         }
 
@@ -368,10 +456,57 @@ public abstract class TruffleInstrument {
          * @param value a value to get the source location for
          * @return a source location of the object, or <code>null</code>
          * @since 0.22
+         * @deprecated use
+         *             {@link #findSourceLocation(com.oracle.truffle.api.nodes.LanguageInfo, java.lang.Object)}
+         *             and retrieve {@link LanguageInfo} from
+         *             <code>node.getRootNode().getLanguageInfo()</code>.
          */
+        @Deprecated
         public SourceSection findSourceLocation(Node node, Object value) {
             final TruffleLanguage.Env env = getLangEnv(node);
             return AccessorInstrumentHandler.langAccess().findSourceLocation(env, value);
+        }
+
+        /**
+         * Uses the provided language to find a source location where a value is declared, if any.
+         * For the best results, use the {@link #findLanguage(java.lang.Object) value's language},
+         * if any.
+         *
+         * @param language a language
+         * @param value a value to get the source location for
+         * @return a source location of the object, or <code>null</code>
+         * @see #findLanguage(java.lang.Object)
+         * @since 0.27
+         */
+        public SourceSection findSourceLocation(LanguageInfo language, Object value) {
+            final TruffleLanguage.Env env = AccessorInstrumentHandler.engineAccess().getEnvForInstrument(language);
+            return AccessorInstrumentHandler.langAccess().findSourceLocation(env, value);
+        }
+
+        /**
+         * Find a language that created the value, if any. This method will return <code>null</code>
+         * for values representing a primitive value, or objects that are not associated with any
+         * language.
+         *
+         * @param value the value to find a language of
+         * @return the language, or <code>null</code> when there is no language associated with the
+         *         value.
+         * @since 0.27
+         */
+        public LanguageInfo findLanguage(Object value) {
+            if (value == null ||
+                            value instanceof Boolean ||
+                            value instanceof Byte ||
+                            value instanceof Short ||
+                            value instanceof Integer ||
+                            value instanceof Long ||
+                            value instanceof Float ||
+                            value instanceof Double ||
+                            value instanceof Character ||
+                            value instanceof String) {
+                return null;
+            }
+            return AccessorInstrumentHandler.engineAccess().getObjectLanguage(value, vmObject);
         }
 
         private static TruffleLanguage.Env getLangEnv(Node node) {
@@ -409,6 +544,14 @@ public abstract class TruffleInstrument {
          * The version for instrument in an arbitrary format.
          */
         String version() default "";
+
+        /**
+         * Specifies whether the instrument is accessible using the polyglot API. Internal
+         * instruments are only accessible from other instruments or guest languages.
+         *
+         * @since 0.27
+         */
+        boolean internal() default false;
 
         /**
          * Declarative list of classes this instrument is known to provide. The instrument is

@@ -24,9 +24,13 @@ package org.graalvm.compiler.truffle.test;
 
 import java.io.ByteArrayOutputStream;
 
+import org.graalvm.compiler.debug.DebugHandlersFactory;
+import org.graalvm.compiler.debug.DebugCloseable;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.LogStream;
 import org.graalvm.compiler.debug.TTY;
-import org.graalvm.compiler.truffle.DefaultTruffleCompiler;
+import org.graalvm.compiler.options.OptionValues;
+import org.graalvm.compiler.truffle.hotspot.HotSpotTruffleCompiler;
 import org.graalvm.compiler.truffle.GraalTruffleRuntime;
 import org.graalvm.compiler.truffle.OptimizedCallTarget;
 import org.graalvm.compiler.truffle.TruffleCompilerOptions;
@@ -91,7 +95,8 @@ public class PerformanceWarningTest {
     @SuppressWarnings("try")
     private static void testHelper(RootNode rootNode, boolean expectException, String... outputStrings) {
 
-        OptimizedCallTarget target = (OptimizedCallTarget) GraalTruffleRuntime.getRuntime().createCallTarget(rootNode);
+        GraalTruffleRuntime runtime = GraalTruffleRuntime.getRuntime();
+        OptimizedCallTarget target = (OptimizedCallTarget) runtime.createCallTarget(rootNode);
 
         // Compile and capture output to TTY.
         ByteArrayOutputStream outContent = new ByteArrayOutputStream();
@@ -99,7 +104,11 @@ public class PerformanceWarningTest {
         try (TTY.Filter filter = new TTY.Filter(new LogStream(outContent))) {
             try (TruffleOptionsOverrideScope scope = TruffleCompilerOptions.overrideOptions(TruffleCompilerOptions.TraceTrufflePerformanceWarnings, Boolean.TRUE);
                             TruffleOptionsOverrideScope scope2 = TruffleCompilerOptions.overrideOptions(TruffleCompilerOptions.TrufflePerformanceWarningsAreFatal, Boolean.TRUE)) {
-                DefaultTruffleCompiler.create(GraalTruffleRuntime.getRuntime()).compileMethod(target, GraalTruffleRuntime.getRuntime(), null);
+                OptionValues options = TruffleCompilerOptions.getOptions();
+                DebugContext debug = DebugContext.create(options, DebugHandlersFactory.LOADER);
+                try (DebugCloseable d = debug.disableIntercept(); DebugContext.Scope s = debug.scope("PerformanceWarningTest")) {
+                    HotSpotTruffleCompiler.create(runtime).compileMethod(debug, target, runtime);
+                }
             } catch (AssertionError e) {
                 seenException = true;
                 if (!expectException) {

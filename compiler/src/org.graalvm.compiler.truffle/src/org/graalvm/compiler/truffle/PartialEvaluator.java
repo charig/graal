@@ -25,6 +25,7 @@ package org.graalvm.compiler.truffle;
 import static org.graalvm.compiler.nodes.graphbuilderconf.InlineInvokePlugin.InlineInfo.createStandardInlineInfo;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.PrintTruffleExpansionHistogram;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TraceTrufflePerformanceWarnings;
+import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TraceTruffleStackTraceLimit;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleFunctionInlining;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleInlineAcrossTruffleBoundary;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleInstrumentBoundaries;
@@ -32,9 +33,6 @@ import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleInstrum
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TruffleIterativePartialEscape;
 import static org.graalvm.compiler.truffle.TruffleCompilerOptions.TrufflePerformanceWarningsAreFatal;
 
-import java.io.PrintWriter;
-import java.io.StringWriter;
-import java.lang.invoke.MethodHandle;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -45,12 +43,21 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import jdk.vm.ci.code.Architecture;
+import jdk.vm.ci.common.JVMCIError;
+import jdk.vm.ci.meta.ConstantReflectionProvider;
+import jdk.vm.ci.meta.JavaConstant;
+import jdk.vm.ci.meta.JavaKind;
+import jdk.vm.ci.meta.MetaAccessProvider;
+import jdk.vm.ci.meta.ResolvedJavaMethod;
+import jdk.vm.ci.meta.ResolvedJavaType;
+import jdk.vm.ci.meta.SpeculationLog;
+
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
-import org.graalvm.compiler.code.SourceStackTraceBailoutException;
 import org.graalvm.compiler.core.common.CompilationIdentifier;
 import org.graalvm.compiler.core.common.type.StampPair;
-import org.graalvm.compiler.debug.Debug;
-import org.graalvm.compiler.debug.Debug.Scope;
+import org.graalvm.compiler.debug.DebugContext;
+import org.graalvm.compiler.debug.DebugContext.Scope;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.debug.Indent;
 import org.graalvm.compiler.graph.Node;
@@ -78,8 +85,8 @@ import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.OptimisticOptimizations;
 import org.graalvm.compiler.phases.PhaseSuite;
 import org.graalvm.compiler.phases.common.CanonicalizerPhase;
-import org.graalvm.compiler.phases.common.ConvertDeoptimizeToGuardPhase;
 import org.graalvm.compiler.phases.common.ConditionalEliminationPhase;
+import org.graalvm.compiler.phases.common.ConvertDeoptimizeToGuardPhase;
 import org.graalvm.compiler.phases.common.inlining.InliningUtil;
 import org.graalvm.compiler.phases.tiers.HighTierContext;
 import org.graalvm.compiler.phases.tiers.PhaseContext;
@@ -110,17 +117,10 @@ import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
 
-import jdk.vm.ci.code.Architecture;
-import jdk.vm.ci.common.JVMCIError;
-import jdk.vm.ci.meta.JavaConstant;
-import jdk.vm.ci.meta.JavaKind;
-import jdk.vm.ci.meta.ResolvedJavaMethod;
-import jdk.vm.ci.meta.ResolvedJavaType;
-
 /**
  * Class performing the partial evaluation starting from the root node of an AST.
  */
-public class PartialEvaluator {
+public abstract class PartialEvaluator {
 
     protected final Providers providers;
     protected final Architecture architecture;
@@ -137,19 +137,21 @@ public class PartialEvaluator {
     private final KnownTruffleFields knownTruffleFields;
 
     public PartialEvaluator(Providers providers, GraphBuilderConfiguration configForRoot, SnippetReflectionProvider snippetReflection, Architecture architecture,
-                    InstrumentPhase.Instrumentation instrumentation) {
+                    InstrumentPhase.Instrumentation instrumentation, KnownTruffleFields knownFields) {
         this.providers = providers;
         this.architecture = architecture;
         this.canonicalizer = new CanonicalizerPhase();
         this.snippetReflection = snippetReflection;
-        this.callDirectMethod = providers.getMetaAccess().lookupJavaMethod(OptimizedCallTarget.getCallDirectMethod());
-        this.callInlinedMethod = providers.getMetaAccess().lookupJavaMethod(OptimizedCallTarget.getCallInlinedMethod());
-        this.callSiteProxyMethod = providers.getMetaAccess().lookupJavaMethod(GraalFrameInstance.CALL_NODE_METHOD);
-        this.knownTruffleFields = new KnownTruffleFields(providers.getMetaAccess());
         this.instrumentation = instrumentation;
+        this.knownTruffleFields = knownFields;
+
+        MetaAccessProvider metaAccess = providers.getMetaAccess();
+        this.callDirectMethod = metaAccess.lookupJavaMethod(OptimizedCallTarget.getCallDirectMethod());
+        this.callInlinedMethod = metaAccess.lookupJavaMethod(OptimizedCallTarget.getCallInlinedMethod());
+        this.callSiteProxyMethod = metaAccess.lookupJavaMethod(GraalFrameInstance.CALL_NODE_METHOD);
 
         try {
-            callRootMethod = providers.getMetaAccess().lookupJavaMethod(OptimizedCallTarget.class.getDeclaredMethod("callRoot", Object[].class));
+            callRootMethod = metaAccess.lookupJavaMethod(OptimizedCallTarget.class.getDeclaredMethod("callRoot", Object[].class));
         } catch (NoSuchMethodException ex) {
             throw new RuntimeException(ex);
         }
@@ -161,10 +163,6 @@ public class PartialEvaluator {
 
     public Providers getProviders() {
         return providers;
-    }
-
-    public SnippetReflectionProvider getSnippetReflection() {
-        return snippetReflection;
     }
 
     public GraphBuilderConfiguration getConfigForParsing() {
@@ -183,33 +181,40 @@ public class PartialEvaluator {
         return new ResolvedJavaMethod[]{callSiteProxyMethod, callDirectMethod};
     }
 
-    public StructuredGraph createGraph(final OptimizedCallTarget callTarget, TruffleInlining inliningDecision, AllowAssumptions allowAssumptions, CompilationIdentifier compilationId,
-                    CancellableCompileTask task) {
-        return createGraph(callTarget, inliningDecision, rootForCallTarget(callTarget), allowAssumptions, compilationId, task);
+    @SuppressWarnings("unused")
+    public StructuredGraph createGraph(DebugContext debug, final OptimizedCallTarget callTarget, TruffleInlining inliningDecision, ResolvedJavaMethod rootMethod,
+                    AllowAssumptions allowAssumptions, CompilationIdentifier compilationId, CancellableCompileTask task) {
+        return createGraph(debug, callTarget, inliningDecision, rootForCallTarget(callTarget), allowAssumptions, compilationId, callTarget.getSpeculationLog(), task);
+    }
+
+    public StructuredGraph createGraph(DebugContext debug, final OptimizedCallTarget callTarget, TruffleInlining inliningDecision,
+                    AllowAssumptions allowAssumptions, CompilationIdentifier compilationId, CancellableCompileTask task) {
+        return createGraph(debug, callTarget, inliningDecision, rootForCallTarget(callTarget), allowAssumptions, compilationId, callTarget.getSpeculationLog(), task);
     }
 
     @SuppressWarnings("try")
-    public StructuredGraph createGraph(final OptimizedCallTarget callTarget, TruffleInlining inliningDecision, ResolvedJavaMethod rootMethod, AllowAssumptions allowAssumptions,
-                    CompilationIdentifier compilationId, CancellableCompileTask task) {
-        try (Scope c = Debug.scope("TruffleTree")) {
-            Debug.dump(Debug.BASIC_LEVEL, new TruffleTreeDumpHandler.TruffleTreeDump(callTarget), "%s", callTarget);
-        } catch (Throwable e) {
-            throw Debug.handle(e);
-        }
+    public StructuredGraph createGraph(DebugContext debug, final OptimizedCallTarget callTarget, TruffleInlining inliningDecision, ResolvedJavaMethod rootMethod,
+                    AllowAssumptions allowAssumptions, CompilationIdentifier compilationId, SpeculationLog log, CancellableCompileTask task) {
 
         String name = callTarget.toString();
         OptionValues options = TruffleCompilerOptions.getOptions();
         // @formatter:off
-        final StructuredGraph graph = new StructuredGraph.Builder(options, allowAssumptions).
+        final StructuredGraph graph = new StructuredGraph.Builder(options, debug, allowAssumptions).
                         name(name).
                         method(rootMethod).
-                        speculationLog(callTarget.getSpeculationLog()).
+                        speculationLog(log).
                         compilationId(compilationId).
                         cancellable(task).
                         build();
         // @formatter:on
 
-        try (Scope s = Debug.scope("CreateGraph", graph); Indent indent = Debug.logAndIndent("createGraph %s", graph)) {
+        try (DebugContext.Scope s = debug.scope("CreateGraph", graph); Indent indent = debug.logAndIndent("createGraph %s", graph)) {
+
+            try (Scope c = debug.scope("TruffleTree")) {
+                debug.dump(DebugContext.BASIC_LEVEL, new TruffleTreeDumpHandler.TruffleTreeDump(callTarget), "%s", callTarget);
+            } catch (Throwable e) {
+                throw debug.handle(e);
+            }
 
             PhaseContext baseContext = new PhaseContext(providers);
             HighTierContext tierContext = new HighTierContext(providers, new PhaseSuite<HighTierContext>(), OptimisticOptimizations.NONE);
@@ -224,7 +229,7 @@ public class PartialEvaluator {
             postPartialEvaluation(graph);
 
         } catch (Throwable e) {
-            throw Debug.handle(e);
+            throw debug.handle(e);
         }
 
         return graph;
@@ -291,7 +296,8 @@ public class PartialEvaluator {
                     lastDirectCallNode = null;
                     if (decision != null && decision.isInline()) {
                         inlining.push(decision);
-                        builder.getAssumptions().record(new AssumptionValidAssumption((OptimizedAssumption) decision.getTarget().getNodeRewritingAssumption()));
+                        JavaConstant assumption = snippetReflection.forObject(decision.getTarget().getNodeRewritingAssumption());
+                        builder.getAssumptions().record(new AssumptionValidAssumption(assumption));
                         return createStandardInlineInfo(callInlinedMethod);
                     }
                 }
@@ -324,7 +330,7 @@ public class PartialEvaluator {
             for (ValueNode argument : arguments) {
                 if (argument.isConstant()) {
                     JavaConstant constant = argument.asJavaConstant();
-                    if (constant.getJavaKind() == JavaKind.Object && snippetReflection.asObject(MethodHandle.class, constant) != null) {
+                    if (constant.getJavaKind() == JavaKind.Object && constant.isNonNull() && knownTruffleFields.classMethodHandle.isInstance(constant)) {
                         return true;
                     }
                 }
@@ -418,7 +424,7 @@ public class PartialEvaluator {
 
         Providers compilationUnitProviders = providers.copyWith(new TruffleConstantFieldProvider(providers.getConstantFieldProvider(), providers.getMetaAccess()));
         return new CachingPEGraphDecoder(architecture, graph, compilationUnitProviders, newConfig, TruffleCompiler.Optimizations, AllowAssumptions.ifNonNull(graph.getAssumptions()),
-                        graph.getOptions(), loopExplosionPlugin, decodingInvocationPlugins, inlineInvokePlugins, parameterPlugin, nodePluginList);
+                        loopExplosionPlugin, decodingInvocationPlugins, inlineInvokePlugins, parameterPlugin, nodePluginList);
     }
 
     protected void doGraphPE(OptimizedCallTarget callTarget, StructuredGraph graph, HighTierContext tierContext, TruffleInlining inliningDecision) {
@@ -458,10 +464,11 @@ public class PartialEvaluator {
     }
 
     protected void registerTruffleInvocationPlugins(InvocationPlugins invocationPlugins, boolean canDelayIntrinsification) {
-        TruffleGraphBuilderPlugins.registerInvocationPlugins(invocationPlugins, canDelayIntrinsification, snippetReflection);
+        ConstantReflectionProvider constantReflection = providers.getConstantReflection();
+        TruffleGraphBuilderPlugins.registerInvocationPlugins(invocationPlugins, canDelayIntrinsification, constantReflection, knownTruffleFields);
 
         for (TruffleInvocationPluginProvider p : GraalServices.load(TruffleInvocationPluginProvider.class)) {
-            p.registerInvocationPlugins(providers.getMetaAccess(), invocationPlugins, canDelayIntrinsification, providers.getConstantReflection(), snippetReflection);
+            p.registerInvocationPlugins(providers.getMetaAccess(), invocationPlugins, canDelayIntrinsification, constantReflection);
         }
     }
 
@@ -475,8 +482,9 @@ public class PartialEvaluator {
 
     @SuppressWarnings({"try", "unused"})
     private void fastPartialEvaluation(OptimizedCallTarget callTarget, TruffleInlining inliningDecision, StructuredGraph graph, PhaseContext baseContext, HighTierContext tierContext) {
+        DebugContext debug = graph.getDebug();
         doGraphPE(callTarget, graph, tierContext, inliningDecision);
-        Debug.dump(Debug.BASIC_LEVEL, graph, "After Partial Evaluation");
+        debug.dump(DebugContext.BASIC_LEVEL, graph, "After Partial Evaluation");
 
         graph.maybeCompress();
 
@@ -496,10 +504,10 @@ public class PartialEvaluator {
         canonicalizer.apply(graph, tierContext);
 
         // Do single partial escape and canonicalization pass.
-        try (Scope pe = Debug.scope("TrufflePartialEscape", graph)) {
+        try (DebugContext.Scope pe = debug.scope("TrufflePartialEscape", graph)) {
             new PartialEscapePhase(TruffleCompilerOptions.getValue(TruffleIterativePartialEscape), canonicalizer, graph.getOptions()).apply(graph, tierContext);
         } catch (Throwable t) {
-            Debug.handle(t);
+            debug.handle(t);
         }
 
         // recompute loop frequencies now that BranchProbabilities have had time to canonicalize
@@ -553,52 +561,74 @@ public class PartialEvaluator {
         TruffleInliningDecision decision = inlining.findByCall(callNode);
         if (decision == null) {
             PerformanceInformationHandler.reportDecisionIsNull(target, callNode);
-        }
-
-        if (decision != null && decision.getTarget() != decision.getProfile().getCallNode().getCurrentCallTarget()) {
+        } else if (decision.getTarget() != decision.getProfile().getCallNode().getCurrentCallTarget()) {
             PerformanceInformationHandler.reportCallTargetChanged(target, callNode, decision);
             return null;
         }
         return decision;
     }
 
-    private static final class PerformanceInformationHandler {
+    public static final class PerformanceInformationHandler {
 
         private static boolean warningSeen = false;
 
-        private static boolean isEnabled() {
+        public static boolean isEnabled() {
             return TruffleCompilerOptions.getValue(TraceTrufflePerformanceWarnings) || TruffleCompilerOptions.getValue(TrufflePerformanceWarningsAreFatal);
         }
 
-        private static void logPerformanceWarning(OptimizedCallTarget target, List<Node> locations, String details, Map<String, Object> properties) {
+        public static void logPerformanceWarning(String callTargetName, List<? extends Node> locations, String details, Map<String, Object> properties) {
             warningSeen = true;
-            logPerformanceWarningImpl(target, "perf warn", details, properties);
+            logPerformanceWarningImpl(callTargetName, "perf warn", details, properties);
             logPerformanceStackTrace(locations);
         }
 
-        private static void logPerformanceInfo(OptimizedCallTarget target, List<? extends Node> locations, String details, Map<String, Object> properties) {
-            logPerformanceWarningImpl(target, "perf info", details, properties);
+        private static void logPerformanceInfo(String callTargetName, List<? extends Node> locations, String details, Map<String, Object> properties) {
+            logPerformanceWarningImpl(callTargetName, "perf info", details, properties);
             logPerformanceStackTrace(locations);
         }
 
-        private static void logPerformanceWarningImpl(OptimizedCallTarget target, String msg, String details, Map<String, Object> properties) {
-            AbstractDebugCompilationListener.log(0, msg, String.format("%-60s|%s", target, details), properties);
+        private static void logPerformanceWarningImpl(String callTargetName, String msg, String details, Map<String, Object> properties) {
+            AbstractDebugCompilationListener.log(0, msg, String.format("%-60s|%s", callTargetName, details), properties);
         }
 
         private static void logPerformanceStackTrace(List<? extends Node> locations) {
             if (locations == null || locations.isEmpty()) {
                 return;
             }
+            int limit = TruffleCompilerOptions.getValue(TraceTruffleStackTraceLimit);
+            if (limit <= 0) {
+                return;
+            }
+
+            EconomicMap<String, List<Node>> groupedByStackTrace = EconomicMap.create(Equivalence.DEFAULT);
             for (Node location : locations) {
                 StackTraceElement[] stackTrace = GraphUtil.approxSourceStackTraceElement(location);
-                if (stackTrace == null) {
-                    GraalTruffleRuntime.getRuntime().log(String.format("No stack trace available for %s.", location));
+                StringBuilder sb = new StringBuilder();
+                String indent = "    ";
+                for (int i = 0; i < stackTrace.length && i < limit; i++) {
+                    if (i != 0) {
+                        sb.append('\n');
+                    }
+                    sb.append(indent).append("at ").append(stackTrace[i]);
+                }
+                if (stackTrace.length > limit) {
+                    sb.append('\n').append(indent).append("...");
+                }
+                String stackTraceAsString = sb.toString();
+                if (!groupedByStackTrace.containsKey(stackTraceAsString)) {
+                    groupedByStackTrace.put(stackTraceAsString, new ArrayList<>());
+                }
+                groupedByStackTrace.get(stackTraceAsString).add(location);
+            }
+            MapCursor<String, List<Node>> entry = groupedByStackTrace.getEntries();
+            while (entry.advance()) {
+                String stackTrace = entry.getKey();
+                List<Node> locationGroup = entry.getValue();
+                if (stackTrace.isEmpty()) {
+                    GraalTruffleRuntime.getRuntime().log(String.format("  No stack trace available for %s.", locationGroup));
                 } else {
-                    GraalTruffleRuntime.getRuntime().log(String.format("Approximated stack trace for %s:", location));
-                    SourceStackTraceBailoutException exception = SourceStackTraceBailoutException.create(null, "", stackTrace);
-                    StringWriter sw = new StringWriter();
-                    exception.printStackTrace(new PrintWriter(sw));
-                    GraalTruffleRuntime.getRuntime().log(sw.toString());
+                    GraalTruffleRuntime.getRuntime().log(String.format("  Approximated stack trace for %s:", locationGroup));
+                    GraalTruffleRuntime.getRuntime().log(stackTrace);
                 }
             }
         }
@@ -608,13 +638,14 @@ public class PartialEvaluator {
             if (!isEnabled()) {
                 return;
             }
+            DebugContext debug = graph.getDebug();
             ArrayList<ValueNode> warnings = new ArrayList<>();
             for (MethodCallTargetNode call : graph.getNodes(MethodCallTargetNode.TYPE)) {
                 if (call.targetMethod().isNative()) {
                     continue; // native methods cannot be inlined
                 }
                 if (call.targetMethod().getAnnotation(TruffleBoundary.class) == null && call.targetMethod().getAnnotation(TruffleCallBoundary.class) == null) {
-                    logPerformanceWarning(target, Arrays.asList(call), String.format("not inlined %s call to %s (%s)", call.invokeKind(), call.targetMethod(), call), null);
+                    logPerformanceWarning(target.getName(), Arrays.asList(call), String.format("not inlined %s call to %s (%s)", call.invokeKind(), call.targetMethod(), call), null);
                     warnings.add(call);
                 }
             }
@@ -632,14 +663,14 @@ public class PartialEvaluator {
             }
             MapCursor<String, ArrayList<ValueNode>> entry = groupedByType.getEntries();
             while (entry.advance()) {
-                logPerformanceInfo(target, entry.getValue(), String.format("non-leaf type check: %s", entry.getKey()), Collections.singletonMap("Nodes", entry.getValue()));
+                logPerformanceInfo(target.getName(), entry.getValue(), String.format("non-leaf type check: %s", entry.getKey()), Collections.singletonMap("Nodes", entry.getValue()));
             }
 
-            if (Debug.isEnabled() && !warnings.isEmpty()) {
-                try (Scope s = Debug.scope("TrufflePerformanceWarnings", graph)) {
-                    Debug.dump(Debug.BASIC_LEVEL, graph, "performance warnings %s", warnings);
+            if (debug.areScopesEnabled() && !warnings.isEmpty()) {
+                try (DebugContext.Scope s = debug.scope("TrufflePerformanceWarnings", graph)) {
+                    debug.dump(DebugContext.BASIC_LEVEL, graph, "performance warnings %s", warnings);
                 } catch (Throwable t) {
-                    Debug.handle(t);
+                    debug.handle(t);
                 }
             }
 
@@ -655,7 +686,7 @@ public class PartialEvaluator {
             }
             Map<String, Object> properties = new LinkedHashMap<>();
             properties.put("callNode", callNode);
-            logPerformanceWarning(target, null, "A direct call within the Truffle AST is not reachable anymore. Call node could not be inlined.", properties);
+            logPerformanceWarning(target.getName(), null, "A direct call within the Truffle AST is not reachable anymore. Call node could not be inlined.", properties);
         }
 
         static void reportCallTargetChanged(OptimizedCallTarget target, OptimizedDirectCallNode callNode, TruffleInliningDecision decision) {
@@ -665,7 +696,7 @@ public class PartialEvaluator {
             Map<String, Object> properties = new LinkedHashMap<>();
             properties.put("originalTarget", decision.getTarget());
             properties.put("callNode", callNode);
-            logPerformanceWarning(target, null, "CallTarget changed during compilation. Call node could not be inlined.", properties);
+            logPerformanceWarning(target.getName(), null, "CallTarget changed during compilation. Call node could not be inlined.", properties);
         }
     }
 }

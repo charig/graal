@@ -22,19 +22,18 @@
  */
 package org.graalvm.compiler.replacements.test;
 
-import org.graalvm.api.word.Pointer;
-import org.graalvm.api.word.Unsigned;
-import org.graalvm.api.word.WordBase;
-import org.graalvm.api.word.WordFactory;
 import org.graalvm.compiler.api.replacements.Snippet;
-import org.graalvm.compiler.core.common.CompilationIdentifier;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.nodes.StructuredGraph;
-import org.graalvm.compiler.nodes.StructuredGraph.AllowAssumptions;
-import org.graalvm.compiler.options.OptionValues;
+import org.graalvm.compiler.nodes.StructuredGraph.Builder;
+import org.graalvm.compiler.phases.PhaseSuite;
+import org.graalvm.compiler.phases.tiers.HighTierContext;
 import org.graalvm.compiler.word.Word;
+import org.graalvm.word.Pointer;
+import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.WordBase;
+import org.graalvm.word.WordFactory;
 import org.junit.Test;
-
-import jdk.vm.ci.meta.ResolvedJavaMethod;
 
 /**
  * Tests for the {@link Word} type.
@@ -42,9 +41,11 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 public class WordTest extends SnippetsTest {
 
     @Override
-    protected StructuredGraph parseEager(ResolvedJavaMethod m, AllowAssumptions allowAssumptions, CompilationIdentifier compilationId, OptionValues options) {
+    protected StructuredGraph parse(Builder builder, PhaseSuite<HighTierContext> graphBuilderSuite) {
         // create a copy to assign a valid compilation id
-        return installer.makeGraph(bytecodeProvider, m, null, null).copyWithIdentifier(compilationId);
+        DebugContext debug = getDebugContext();
+        StructuredGraph originalGraph = installer.makeGraph(debug, bytecodeProvider, builder.getMethod(), null, null);
+        return originalGraph.copyWithIdentifier(builder.getCompilationId(), debug);
     }
 
     @Test
@@ -117,7 +118,7 @@ public class WordTest extends SnippetsTest {
     @Snippet
     public static long cast(long input) {
         WordBase base = WordFactory.signed(input);
-        Unsigned unsigned = (Unsigned) base;
+        UnsignedWord unsigned = (UnsignedWord) base;
         Pointer pointer = (Pointer) unsigned;
         Word word = (Word) pointer;
         return word.rawValue();

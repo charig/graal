@@ -40,8 +40,27 @@ from mx_javamodules import as_java_module, get_java_module_info
 from urlparse import urljoin
 import mx_gate
 import mx_unittest
+import mx_benchmark
 
 _suite = mx.suite('truffle')
+
+class JMHRunnerTruffleBenchmarkSuite(mx_benchmark.JMHRunnerBenchmarkSuite):
+
+    def name(self):
+        return "truffle"
+
+    def group(self):
+        return "Graal"
+
+    def subgroup(self):
+        return "truffle"
+
+    def extraVmArgs(self):
+        return ['-XX:-UseJVMCIClassLoader'] + super(JMHRunnerTruffleBenchmarkSuite, self).extraVmArgs()
+
+mx_benchmark.add_bm_suite(JMHRunnerTruffleBenchmarkSuite())
+#mx_benchmark.add_java_vm(mx_benchmark.DefaultJavaVm("server", "default"), priority=3)
+
 
 def javadoc(args, vm=None):
     """build the Javadoc for all API packages"""
@@ -102,11 +121,6 @@ def checkLinks(javadocDir):
     if err:
         mx.abort('There are wrong references in Javadoc')
 
-def build(args, vm=None):
-    """build the Java sources"""
-    opts2 = mx.build(['--source', '1.7'] + args)
-    assert len(opts2.remainder) == 0
-
 def _path_args(depNames=None):
     """
     Gets the VM args for putting the dependencies named in `depNames` on the
@@ -143,7 +157,7 @@ def _unittest_config_participant(config):
 
         # This is required for the call to setAccessible in
         # TruffleTCK.testValueWithSource to work.
-        vmArgs = vmArgs + ['--add-opens=com.oracle.truffle.truffle_api/com.oracle.truffle.api.vm=ALL-UNNAMED']
+        vmArgs = vmArgs + ['--add-opens=com.oracle.truffle.truffle_api/com.oracle.truffle.api.vm=ALL-UNNAMED', '--add-modules=ALL-MODULE-PATH']
     return (vmArgs, mainClass, mainClassArgs)
 
 mx_unittest.add_config_participant(_unittest_config_participant)

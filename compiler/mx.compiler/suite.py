@@ -1,6 +1,7 @@
 suite = {
-  "mxversion" : "5.93.0",
+  "mxversion" : "5.122.0",
   "name" : "compiler",
+  "sourceinprojectwhitelist" : [],
 
   "imports" : {
     "suites": [
@@ -52,10 +53,9 @@ suite = {
 
     "DACAPO" : {
       "urls" : [
-        "https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/dacapo-9.12-bach.jar",
-        "http://softlayer.dl.sourceforge.net/project/dacapobench/9.12-bach/dacapo-9.12-bach.jar",
+        "https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/dacapo-9.12-bach-patched.jar",
       ],
-      "sha1" : "2626a9546df09009f6da0df854e6dc1113ef7dd4",
+      "sha1" : "e39957904b7e79caf4fa54f30e8e4ee74d4e9e37",
     },
 
     "DACAPO_SCALA" : {
@@ -83,8 +83,8 @@ suite = {
     },
 
     "IDEALGRAPHVISUALIZER_DIST" : {
-      "urls" : ["https://lafo.ssw.uni-linz.ac.at/pub/idealgraphvisualizer/idealgraphvisualizer-8820e1874bf7.zip"],
-      "sha1" : "7eb51f6d643ed7833268b6971e273826d44c22b1",
+      "urls" : ["https://lafo.ssw.uni-linz.ac.at/pub/idealgraphvisualizer/idealgraphvisualizer-47.zip"],
+      "sha1" : "36bb490f20460820d2f8de52003697fdc970b462",
     },
 
     "JOL_INTERNALS" : {
@@ -190,8 +190,7 @@ suite = {
       "sourceDirs" : ["src"],
       "checkstyle" : "org.graalvm.compiler.graph",
       "uses" : [
-        "org.graalvm.compiler.debug.DebugConfigCustomizer",
-        "org.graalvm.compiler.debug.DebugInitializationParticipant",
+        "org.graalvm.compiler.debug.DebugHandlersFactory",
         "org.graalvm.compiler.debug.TTYStreamProvider",
       ],
       "dependencies" : [
@@ -226,6 +225,14 @@ suite = {
       "checkstyle" : "org.graalvm.compiler.graph",
       "javaCompliance" : "1.8",
       "workingSets" : "Graal",
+    },
+
+    "org.graalvm.graphio" : {
+      "subDir" : "src",
+      "sourceDirs" : ["src"],
+      "checkstyle" : "org.graalvm.compiler.graph",
+      "javaCompliance" : "1.8",
+      "workingSets" : "API,Graal",
     },
 
     "org.graalvm.util" : {
@@ -332,7 +339,6 @@ suite = {
       "subDir" : "src",
       "sourceDirs" : ["src"],
       "dependencies" : [
-        "org.graalvm.compiler.core.aarch64",
         "org.graalvm.compiler.hotspot",
         "org.graalvm.compiler.replacements.aarch64",
       ],
@@ -609,6 +615,7 @@ suite = {
       "javaCompliance" : "1.8",
       "workingSets" : "Graal,LIR",
       "findbugs" : "false",
+      "isTestProject" : True,
     },
 
     "org.graalvm.compiler.lir.test" : {
@@ -661,15 +668,6 @@ suite = {
       "workingSets" : "Graal,LIR,SPARC",
     },
 
-    "org.graalvm.api.word" : {
-      "subDir" : "src",
-      "sourceDirs" : ["src"],
-      "dependencies" : [],
-      "checkstyle" : "org.graalvm.compiler.graph",
-      "javaCompliance" : "1.8",
-      "workingSets" : "API",
-    },
-
     "org.graalvm.compiler.word" : {
       "subDir" : "src",
       "sourceDirs" : ["src"],
@@ -704,7 +702,7 @@ suite = {
       "sourceDirs" : ["src"],
       "dependencies" : [
         "org.graalvm.compiler.replacements",
-        "org.graalvm.compiler.lir.aarch64",
+        "org.graalvm.compiler.core.aarch64",
       ],
       "checkstyle" : "org.graalvm.compiler.graph",
       "javaCompliance" : "1.8",
@@ -856,6 +854,7 @@ suite = {
       "annotationProcessors" : ["mx:JMH_1_18"],
       "findbugsIgnoresGenerated" : True,
       "workingSets" : "Graal,Bench",
+      "isTestProject" : True,
     },
 
     "org.graalvm.compiler.microbenchmarks" : {
@@ -873,6 +872,7 @@ suite = {
       "annotationProcessors" : ["mx:JMH_1_18"],
       "findbugsIgnoresGenerated" : True,
       "workingSets" : "Graal,Bench",
+      "isTestProject" : True,
     },
 
     "org.graalvm.compiler.loop" : {
@@ -917,7 +917,10 @@ suite = {
         "org.graalvm.compiler.virtual",
         "org.graalvm.compiler.loop.phases",
       ],
-      "uses" : ["org.graalvm.compiler.core.match.MatchStatementSet"],
+      "uses" : [
+        "org.graalvm.compiler.core.match.MatchStatementSet",
+        "org.graalvm.compiler.hotspot.HotSpotCodeCacheListener",
+      ],
       "checkstyle" : "org.graalvm.compiler.graph",
       "javaCompliance" : "1.8",
       "annotationProcessors" : [
@@ -1052,8 +1055,8 @@ suite = {
       "subDir" : "src",
       "sourceDirs" : ["src"],
       "dependencies" : [
-        "org.graalvm.compiler.debug", 
-        "org.graalvm.api.word",
+        "org.graalvm.compiler.debug",
+        "sdk:GRAAL_SDK",
       ],
       "annotationProcessors" : ["GRAAL_OPTIONS_PROCESSOR"],
       "checkstyle" : "org.graalvm.compiler.graph",
@@ -1065,6 +1068,7 @@ suite = {
       "subDir" : "src",
       "sourceDirs" : ["src"],
       "dependencies" : [
+        "org.graalvm.graphio",
         "org.graalvm.compiler.core",
         "org.graalvm.compiler.java",
       ],
@@ -1082,6 +1086,7 @@ suite = {
       "subDir" : "src",
       "sourceDirs" : ["src"],
       "dependencies" : [
+        "org.graalvm.compiler.debug",
         "org.graalvm.util",
         "mx:JUNIT",
       ],
@@ -1122,6 +1127,7 @@ suite = {
       "workingSets" : "Graal,Test",
       "jacoco" : "exclude",
       "findbugs" : "false",
+      "isTestProject" : True,
     },
 
     # ------------- GraalTruffle -------------
@@ -1133,6 +1139,7 @@ suite = {
         "truffle:TRUFFLE_API",
         "org.graalvm.compiler.api.runtime",
         "org.graalvm.compiler.runtime",
+        "org.graalvm.graphio",
         "org.graalvm.compiler.replacements",
       ],
       "uses" : [
@@ -1264,6 +1271,24 @@ suite = {
       "workingSets" : "Graal,Truffle,AArch64",
     },
 
+    # ------------- blackbox micro benchmarks -------------
+
+    "org.graalvm.micro.benchmarks" : {
+      "subDir" : "src",
+      "sourceDirs" : ["src"],
+      "dependencies" : [
+        "mx:JMH_1_18",
+      ],
+      "checkstyle" : "org.graalvm.compiler.graph",
+      "javaCompliance" : "1.8",
+      "checkPackagePrefix" : "false",
+      "annotationProcessors" : ["mx:JMH_1_18"],
+      "findbugsIgnoresGenerated" : True,
+      "workingSets" : "Graal,Bench",
+      "isTestProject" : True,
+    },
+
+
   },
 
   "distributions" : {
@@ -1275,6 +1300,13 @@ suite = {
       "dependencies" : ["org.graalvm.compiler.options"],
       "distDependencies" : [
         "JVMCI_API",
+      ],
+    },
+
+    "GRAAL_GRAPHIO" : {
+      "subDir" : "src",
+      "dependencies" : ["org.graalvm.graphio"],
+      "distDependencies" : [
       ],
     },
 
@@ -1305,12 +1337,12 @@ suite = {
     "GRAAL_API" : {
       "subDir" : "src",
       "dependencies" : [
-        "org.graalvm.api.word",
         "org.graalvm.compiler.api.replacements",
         "org.graalvm.compiler.api.runtime",
         "org.graalvm.compiler.graph",
       ],
       "distDependencies" : [
+        "sdk:GRAAL_SDK",
         "JVMCI_API",
         "GRAAL_NODEINFO",
         "GRAAL_OPTIONS",
@@ -1346,6 +1378,7 @@ suite = {
       "distDependencies" : [
         "GRAAL_API",
         "GRAAL_COMPILER",
+        "GRAAL_GRAPHIO",
       ],
     },
 
@@ -1474,6 +1507,7 @@ suite = {
       ],
       "subDir" : "src",
       "overlaps" : [
+        "GRAAL_GRAPHIO",
         "GRAAL_OPTIONS",
         "GRAAL_NODEINFO",
         "GRAAL_API",
@@ -1511,6 +1545,7 @@ suite = {
         "org.graalvm.compiler.truffle.hotspot.aarch64",
       ],
       "distDependencies" : [
+        "sdk:GRAAL_SDK",
         "truffle:TRUFFLE_API",
       ],
       "exclude" : [
@@ -1518,6 +1553,24 @@ suite = {
         "JVMCI_API",
         "JVMCI_HOTSPOT",
       ],
+    },
+
+    "GRAAL_COMPILER_WHITEBOX_MICRO_BENCHMARKS" : {
+      "subDir" : "src",
+      "dependencies" : [
+        "org.graalvm.compiler.virtual.bench",
+        "org.graalvm.compiler.microbenchmarks",
+        "org.graalvm.compiler.truffle.bench",
+      ],
+      "distDependencies" : [
+        "GRAAL",
+        "GRAAL_TEST",
+      ],
+    },
+
+    "GRAAL_COMPILER_MICRO_BENCHMARKS" : {
+      "subDir" : "src",
+      "dependencies" : ["org.graalvm.micro.benchmarks"],
     },
   },
 }

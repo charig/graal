@@ -24,10 +24,8 @@
  */
 package com.oracle.truffle.api.interop.java;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
@@ -37,6 +35,7 @@ import java.util.LinkedHashSet;
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerAsserts;
 import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.TruffleOptions;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
@@ -57,189 +56,197 @@ final class JavaInteropReflect {
     private static final Object[] EMPTY = {};
 
     @CompilerDirectives.TruffleBoundary
-    static Object readField(JavaObject object, String name) throws NoSuchFieldError, SecurityException, IllegalArgumentException, IllegalAccessException {
+    static Object readField(JavaObject object, String name) {
         Object obj = object.obj;
-        final boolean onlyStatic = obj == null;
-        Object val;
-        try {
-            final Field field = object.clazz.getField(name);
-            final boolean isStatic = (field.getModifiers() & Modifier.STATIC) != 0;
-            if (onlyStatic != isStatic) {
-                throw UnknownIdentifierException.raise(name);
+        final boolean onlyStatic = object.isClass();
+        JavaClassDesc classDesc = JavaClassDesc.forClass(object.clazz);
+        Field field = classDesc.lookupField(name, onlyStatic);
+        if (field != null) {
+            Object val = getField(obj, field);
+            return JavaInterop.toGuestValue(val, object.languageContext);
+        } else {
+            JavaMethodDesc method = classDesc.lookupMethod(name, onlyStatic);
+            if (method != null) {
+                return new JavaFunctionObject(method, obj, object.languageContext);
             }
-            val = field.get(obj);
-        } catch (NoSuchFieldException ex) {
-            for (Method m : object.clazz.getMethods()) {
-                final boolean isStatic = (m.getModifiers() & Modifier.STATIC) != 0;
-                if (onlyStatic != isStatic) {
-                    continue;
-                }
-                if (m.getName().equals(name) && m.getDeclaringClass() != Object.class) {
-                    return new JavaFunctionObject(m, obj);
+
+            if (isJNIName(name)) {
+                method = classDesc.lookupMethodByJNIName(name, onlyStatic);
+                if (method != null) {
+                    return new JavaFunctionObject(method, obj, object.languageContext);
                 }
             }
-            int signature = name.indexOf("__");
-            if (signature != -1) {
-                for (Method m : object.clazz.getMethods()) {
-                    final boolean isStatic = (m.getModifiers() & Modifier.STATIC) != 0;
-                    if (onlyStatic != isStatic) {
-                        continue;
-                    }
-                    if (name.startsWith(m.getName())) {
-                        final String fullName = jniName(m);
-                        if (fullName.equals(name)) {
-                            return new JavaFunctionObject(m, obj);
-                        }
-                    }
+
+            if (onlyStatic) {
+                Class<?> clazz = object.clazz;
+                JavaObject innerclass = lookupInnerClass(clazz, name);
+                if (innerclass != null) {
+                    return innerclass;
                 }
             }
             throw UnknownIdentifierException.raise(name);
         }
-        return JavaInterop.asTruffleObject(val);
     }
 
-    static boolean isField(JavaObject object, String name) {
-        Object obj = object.obj;
-        final boolean onlyStatic = obj == null;
-        try {
-            final Field field = object.clazz.getField(name);
-            final boolean isStatic = (field.getModifiers() & Modifier.STATIC) != 0;
-            if (onlyStatic != isStatic) {
-                return false;
-            }
-            return true;
-        } catch (NoSuchFieldException | SecurityException ex) {
-            return false;
-        }
-    }
-
-    static boolean isMethod(JavaObject object, String name) {
-        Object obj = object.obj;
-        final boolean onlyStatic = obj == null;
-        for (Method m : object.clazz.getMethods()) {
-            final boolean isStatic = (m.getModifiers() & Modifier.STATIC) != 0;
-            if (onlyStatic != isStatic) {
-                continue;
-            }
-            if (m.getName().equals(name)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    static boolean isJNIMethod(JavaObject object, String name) {
-        Object obj = object.obj;
-        final boolean onlyStatic = obj == null;
-        for (Method m : object.clazz.getMethods()) {
-            final boolean isStatic = (m.getModifiers() & Modifier.STATIC) != 0;
-            if (onlyStatic != isStatic) {
-                continue;
-            }
-            if (jniName(m).equals(name)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    @CompilerDirectives.TruffleBoundary
-    static Method findMethod(JavaObject object, String name, Object[] args) {
-        for (Method m : object.clazz.getMethods()) {
-            if (m.getName().equals(name) && m.getDeclaringClass() != Object.class) {
-                if (m.getParameterTypes().length == args.length || m.isVarArgs()) {
-                    return m;
+    static JavaObject lookupInnerClass(Class<?> clazz, String name) {
+        if (Modifier.isPublic(clazz.getModifiers())) {
+            for (Class<?> t : clazz.getClasses()) {
+                // no support for non-static type members now
+                if (isStaticTypeOrInterface(t) && t.getSimpleName().equals(name)) {
+                    return new JavaObject(null, t);
                 }
             }
         }
         return null;
     }
 
+    static boolean isField(JavaObject object, String name) {
+        JavaClassDesc classDesc = JavaClassDesc.forClass(object.clazz);
+        final boolean onlyStatic = object.isClass();
+        return classDesc.lookupField(name, onlyStatic) != null;
+    }
+
+    static boolean isMethod(JavaObject object, String name) {
+        JavaClassDesc classDesc = JavaClassDesc.forClass(object.clazz);
+        final boolean onlyStatic = object.isClass();
+        return classDesc.lookupMethod(name, onlyStatic) != null;
+    }
+
+    static boolean isInternalMethod(JavaObject object, String name) {
+        JavaClassDesc classDesc = JavaClassDesc.forClass(object.clazz);
+        final boolean onlyStatic = object.isClass();
+        JavaMethodDesc method = classDesc.lookupMethod(name, onlyStatic);
+        return method != null && method.isInternal();
+    }
+
+    static boolean isMemberType(JavaObject object, String name) {
+        final boolean onlyStatic = object.isClass();
+        if (!onlyStatic) {
+            // no support for non-static members now
+            return false;
+        }
+        Class<?> clazz = object.clazz;
+        if (Modifier.isPublic(clazz.getModifiers())) {
+            for (Class<?> t : clazz.getClasses()) {
+                if (isStaticTypeOrInterface(t) && t.getSimpleName().equals(name)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    static boolean isJNIName(String name) {
+        return name.contains("__");
+    }
+
+    @CompilerDirectives.TruffleBoundary
+    static JavaMethodDesc findMethod(JavaObject object, String name, Object[] args) {
+        JavaMethodDesc method = findMethod(object, name);
+        if (method != null) {
+            if (!isApplicableByArity(method, args.length)) {
+                return null;
+            }
+        }
+        return method;
+    }
+
+    private static boolean isApplicableByArity(JavaMethodDesc method, int nArgs) {
+        if (method instanceof SingleMethodDesc) {
+            return nArgs == ((SingleMethodDesc) method).getParameterCount() ||
+                            ((SingleMethodDesc) method).isVarArgs() && nArgs >= ((SingleMethodDesc) method).getParameterCount() - 1;
+        } else {
+            SingleMethodDesc[] overloads = ((OverloadedMethodDesc) method).getOverloads();
+            for (SingleMethodDesc overload : overloads) {
+                if (isApplicableByArity(overload, nArgs)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    @CompilerDirectives.TruffleBoundary
+    static JavaMethodDesc findMethod(JavaObject object, String name) {
+        if (TruffleOptions.AOT) {
+            return null;
+        }
+
+        JavaClassDesc classDesc = JavaClassDesc.forClass(object.clazz);
+        return classDesc.lookupMethod(name, object.isClass());
+    }
+
     private JavaInteropReflect() {
     }
 
     @CompilerDirectives.TruffleBoundary
-    static Object newConstructor(final Class<?> clazz, Object[] args) throws IllegalStateException, SecurityException {
-        IllegalStateException ex = new IllegalStateException("No suitable constructor found for " + clazz);
-        for (Constructor<?> constructor : clazz.getConstructors()) {
-            try {
-                Object ret = constructor.newInstance(args);
-                if (ToPrimitiveNode.temporary().isPrimitive(ret)) {
-                    return ret;
-                }
-                return JavaInterop.asTruffleObject(ret);
-            } catch (InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException instEx) {
-                ex = new IllegalStateException(instEx);
-            }
-        }
-        throw ex;
-    }
-
-    @CompilerDirectives.TruffleBoundary
     static Field findField(JavaObject receiver, String name) {
-        try {
-            return receiver.clazz.getField(name);
-        } catch (NoSuchFieldException ex) {
-            throw new RuntimeException(ex);
-        }
+        JavaClassDesc classDesc = JavaClassDesc.forClass(receiver.clazz);
+        final boolean onlyStatic = receiver.isClass();
+        return classDesc.lookupField(name, onlyStatic);
     }
 
     @CompilerDirectives.TruffleBoundary
-    static void setField(Object obj, Field f, Object convertedValue) {
+    static void setField(Object obj, Field field, Object value) {
         try {
-            f.set(obj, convertedValue);
+            field.set(obj, value);
         } catch (IllegalAccessException ex) {
-            throw new RuntimeException(ex);
+            throw new IllegalStateException(ex);
         }
     }
 
     @CompilerDirectives.TruffleBoundary
-    static <T> T asJavaFunction(Class<T> functionalType, TruffleObject function) {
-        final SingleHandler handler = new SingleHandler(function);
+    static Object getField(Object obj, Field field) {
+        try {
+            return field.get(obj);
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @CompilerDirectives.TruffleBoundary
+    static <T> T asJavaFunction(Class<T> functionalType, TruffleObject function, Object languageContext) {
+        assert JavaInterop.isJavaFunctionInterface(functionalType);
+        final SingleHandler handler = new SingleHandler(function, languageContext);
         Object obj = Proxy.newProxyInstance(functionalType.getClassLoader(), new Class<?>[]{functionalType}, handler);
         return functionalType.cast(obj);
     }
 
     @CompilerDirectives.TruffleBoundary
-    static TruffleObject asTruffleViaReflection(Object obj) throws IllegalArgumentException {
+    static TruffleObject asTruffleViaReflection(Object obj, Object languageContext) {
         if (Proxy.isProxyClass(obj.getClass())) {
             InvocationHandler h = Proxy.getInvocationHandler(obj);
             if (h instanceof TruffleHandler) {
                 return ((TruffleHandler) h).obj;
             }
         }
-        return new JavaObject(obj, obj.getClass());
+        return new JavaObject(obj, obj.getClass(), languageContext);
     }
 
     static Object newProxyInstance(Class<?> clazz, TruffleObject obj) throws IllegalArgumentException {
         return Proxy.newProxyInstance(clazz.getClassLoader(), new Class<?>[]{clazz}, new TruffleHandler(obj));
     }
 
+    static boolean isStaticTypeOrInterface(Class<?> t) {
+        // anonymous classes are private, they should be eliminated elsewhere
+        return Modifier.isPublic(t.getModifiers()) && (t.isInterface() || t.isEnum() || Modifier.isStatic(t.getModifiers()));
+    }
+
     @CompilerDirectives.TruffleBoundary
-    static String[] findUniquePublicMemberNames(Class<?> c, boolean onlyInstance, boolean includeInternal) throws SecurityException {
-        Class<?> clazz = c;
-        while ((clazz.getModifiers() & Modifier.PUBLIC) == 0) {
-            clazz = clazz.getSuperclass();
-        }
-        final Field[] fields = clazz.getFields();
+    static String[] findUniquePublicMemberNames(Class<?> clazz, boolean onlyInstance, boolean includeInternal) throws SecurityException {
+        JavaClassDesc classDesc = JavaClassDesc.forClass(clazz);
         Collection<String> names = new LinkedHashSet<>();
-        for (Field field : fields) {
-            if (((field.getModifiers() & Modifier.STATIC) == 0) != onlyInstance) {
-                continue;
-            }
-            names.add(field.getName());
-        }
-        final Method[] methods = clazz.getMethods();
-        for (Method method : methods) {
-            if (method.getDeclaringClass() == Object.class) {
-                continue;
-            }
-            if (((method.getModifiers() & Modifier.STATIC) == 0) != onlyInstance) {
-                continue;
-            }
-            names.add(method.getName());
-            if (includeInternal) {
-                names.add(jniName(method));
+        names.addAll(classDesc.getFieldNames(!onlyInstance));
+        names.addAll(classDesc.getMethodNames(!onlyInstance, includeInternal));
+        if (!onlyInstance) {
+            if (Modifier.isPublic(clazz.getModifiers())) {
+                // no support for non-static member types now
+                for (Class<?> t : clazz.getClasses()) {
+                    if (!isStaticTypeOrInterface(t)) {
+                        continue;
+                    }
+                    names.add(t.getSimpleName());
+                }
             }
         }
         return names.toArray(new String[0]);
@@ -255,10 +262,11 @@ final class JavaInteropReflect {
 
         private final TruffleObject symbol;
         private CallTarget target;
+        private final Object languageContext;
 
-        SingleHandler(TruffleObject obj) {
-            super();
+        SingleHandler(TruffleObject obj, Object languageContext) {
             this.symbol = obj;
+            this.languageContext = languageContext;
         }
 
         @Override
@@ -285,21 +293,22 @@ final class JavaInteropReflect {
             CompilerAsserts.neverPartOfCompilation();
             Object[] args = arguments == null ? EMPTY : arguments;
             if (target == null) {
-                target = JavaInterop.ACCESSOR.engine().lookupOrRegisterComputation(symbol, null, JavaInteropReflect.class);
+                target = JavaInterop.lookupOrRegisterComputation(symbol, null, JavaInteropReflect.class);
                 if (target == null) {
                     Node executeMain = Message.createExecute(args.length).createNode();
                     RootNode symbolNode = new ToJavaNode.TemporaryRoot(executeMain);
-                    target = JavaInterop.ACCESSOR.engine().lookupOrRegisterComputation(symbol, symbolNode, JavaInteropReflect.class);
+                    target = JavaInterop.lookupOrRegisterComputation(symbol, symbolNode, JavaInteropReflect.class);
                 }
             }
             for (int i = 0; i < args.length; i++) {
-                if (args[i] instanceof TruffleObject) {
+                Object arg = args[i];
+                if (arg instanceof TruffleObject) {
                     continue;
-                }
-                if (ToPrimitiveNode.temporary().isPrimitive(args[i])) {
+                } else if (JavaInterop.isPrimitive(arg)) {
                     continue;
+                } else {
+                    arguments[i] = JavaInterop.toGuestValue(arg, languageContext);
                 }
-                arguments[i] = JavaInterop.asTruffleObject(args[i]);
             }
             return target.call(symbol, TypeAndClass.forReturnType(method), args);
         }
@@ -326,12 +335,12 @@ final class JavaInteropReflect {
                 return method.invoke(obj, args);
             }
 
-            CallTarget call = JavaInterop.ACCESSOR.engine().lookupOrRegisterComputation(obj, null, method);
+            CallTarget call = JavaInterop.lookupOrRegisterComputation(obj, null, method);
             if (call == null) {
                 Message message = findMessage(method, method.getAnnotation(MethodMessage.class), args.length);
                 TypeAndClass<?> convertTo = TypeAndClass.forReturnType(method);
                 MethodNode methodNode = MethodNodeGen.create(method.getName(), message, convertTo);
-                call = JavaInterop.ACCESSOR.engine().lookupOrRegisterComputation(obj, methodNode, method);
+                call = JavaInterop.lookupOrRegisterComputation(obj, methodNode, method);
             }
 
             return call.call(obj, args);
@@ -349,7 +358,7 @@ final class JavaInteropReflect {
         MethodNode(String name, Message message, TypeAndClass<?> returnType) {
             super(null);
             this.name = name;
-            this.toJavaNode = ToJavaNodeGen.create();
+            this.toJavaNode = ToJavaNode.create();
             this.message = message;
             this.returnType = returnType;
         }
@@ -361,7 +370,7 @@ final class JavaInteropReflect {
                 Object[] params = (Object[]) frame.getArguments()[1];
                 Object res = executeImpl(receiver, params);
                 if (!returnType.clazz.isInterface()) {
-                    res = JavaInterop.ACCESSOR.engine().findOriginalObject(res);
+                    res = JavaInterop.findOriginalObject(res);
                 }
                 return toJavaNode.execute(res, returnType);
             } catch (InteropException ex) {
@@ -557,7 +566,7 @@ final class JavaInteropReflect {
         return ToJavaNode.toJava(ret, TypeAndClass.forReturnType(method));
     }
 
-    private static String jniName(Method m) {
+    static String jniName(Method m) {
         StringBuilder sb = new StringBuilder();
         noUnderscore(sb, m.getName()).append("__");
         appendType(sb, m.getReturnType());

@@ -56,11 +56,13 @@ import java.util.function.Supplier;
 
 import org.graalvm.compiler.api.runtime.GraalRuntime;
 import org.graalvm.compiler.code.CompilationResult;
+import org.graalvm.compiler.core.CompilationWrapper;
+import org.graalvm.compiler.core.CompilationWrapper.ExceptionAction;
 import org.graalvm.compiler.core.CompilerThreadFactory;
 import org.graalvm.compiler.core.common.CompilationIdentifier;
 import org.graalvm.compiler.core.target.Backend;
-import org.graalvm.compiler.debug.Debug;
-import org.graalvm.compiler.debug.Debug.Scope;
+import org.graalvm.compiler.debug.DebugContext;
+import org.graalvm.compiler.debug.DiagnosticsOutputDirectory;
 import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.debug.TTY;
 import org.graalvm.compiler.nodes.StructuredGraph;
@@ -86,6 +88,7 @@ import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.CompilerOptions;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.Truffle;
+import com.oracle.truffle.api.TruffleOptions;
 import com.oracle.truffle.api.TruffleRuntime;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.FrameDescriptor;
@@ -114,11 +117,19 @@ public abstract class GraalTruffleRuntime implements TruffleRuntime {
 
     private final Map<RootCallTarget, Void> callTargets = Collections.synchronizedMap(new WeakHashMap<RootCallTarget, Void>());
 
-    protected abstract static class BackgroundCompileQueue implements CompilerThreadFactory.DebugConfigAccess {
+    /**
+     * Used only to reset state for native image compilation.
+     */
+    protected void clearCallTargets() {
+        assert TruffleOptions.AOT : "Must be called only in AOT mode.";
+        callTargets.clear();
+    }
+
+    protected static class BackgroundCompileQueue {
         private final ExecutorService compileQueue;
 
-        protected BackgroundCompileQueue() {
-            CompilerThreadFactory factory = new CompilerThreadFactory("TruffleCompilerThread", this);
+        public BackgroundCompileQueue() {
+            CompilerThreadFactory factory = new CompilerThreadFactory("TruffleCompilerThread");
 
             int selectedProcessors = TruffleCompilerOptions.getValue(TruffleCompilerThreads);
             if (selectedProcessors == 0) {
@@ -140,7 +151,7 @@ public abstract class GraalTruffleRuntime implements TruffleRuntime {
     private final List<GraalTruffleCompilationListener> compilationListeners = new ArrayList<>();
     private final GraalTruffleCompilationListener compilationNotify = new DispatchTruffleCompilationListener();
 
-    protected TruffleCompiler truffleCompiler;
+    protected volatile TruffleCompiler truffleCompiler;
     protected LoopNodeFactory loopNodeFactory;
     protected CallMethods callMethods;
 
@@ -165,9 +176,15 @@ public abstract class GraalTruffleRuntime implements TruffleRuntime {
     }
 
     /**
-     * Gets the initial values for this Graal-based Truffle runtime.
+     * Gets the initial option values for this Graal-based Truffle runtime.
      */
     public abstract OptionValues getInitialOptions();
+
+    /**
+     * Opens a debug context for compiling {@code callTarget}. The {@link DebugContext#close()}
+     * method should be called on the returned object once the compilation is finished.
+     */
+    protected abstract DebugContext openDebugContext(OptionValues options, CompilationIdentifier compilationId, OptimizedCallTarget callTarget);
 
     public GraalTruffleRuntime(Supplier<GraalRuntime> graalRuntime) {
         this.graalRuntime = graalRuntime;
@@ -361,14 +378,14 @@ public abstract class GraalTruffleRuntime implements TruffleRuntime {
                 skipFrames++;
                 return null;
             } else if (frame.isMethod(methods.callTargetMethod)) {
-                try {
-                    if (skipFrames == 0) {
+                if (skipFrames == 0) {
+                    try {
                         return visitor.visitFrame(new GraalFrameInstance(frame, callNodeFrame));
-                    } else {
-                        skipFrames--;
+                    } finally {
+                        callNodeFrame = null;
                     }
-                } finally {
-                    callNodeFrame = null;
+                } else {
+                    skipFrames--;
                 }
             } else if (frame.isMethod(methods.callNodeMethod)) {
                 callNodeFrame = frame;
@@ -508,25 +525,29 @@ public abstract class GraalTruffleRuntime implements TruffleRuntime {
         }
     }
 
-    protected void doCompile(OptimizedCallTarget optimizedCallTarget, CancellableCompileTask task) {
+    protected void doCompile(OptionValues options, OptimizedCallTarget optimizedCallTarget, CancellableCompileTask task) {
         int repeats = TruffleCompilerOptions.getValue(TruffleCompilationRepeats);
         if (repeats <= 1) {
             /* Normal compilation. */
-            doCompile0(optimizedCallTarget, task);
+            doCompile0(options, optimizedCallTarget, task);
 
         } else {
             /* Repeated compilation for compilation time benchmarking. */
             for (int i = 0; i < repeats; i++) {
-                doCompile0(optimizedCallTarget, task);
+                doCompile0(options, optimizedCallTarget, task);
             }
             System.exit(0);
         }
     }
 
     @SuppressWarnings("try")
-    private void doCompile0(OptimizedCallTarget optimizedCallTarget, CancellableCompileTask task) {
-        try (Scope s = Debug.scope("Truffle", new TruffleDebugJavaMethod(optimizedCallTarget))) {
-            compileMethod(optimizedCallTarget, task);
+    private void doCompile0(OptionValues options, OptimizedCallTarget optimizedCallTarget, CancellableCompileTask task) {
+        TruffleCompiler compiler = getTruffleCompiler();
+        ResolvedJavaMethod rootMethod = compiler.partialEvaluator.rootForCallTarget(optimizedCallTarget);
+        CompilationIdentifier compilationId = getCompilationIdentifier(optimizedCallTarget, rootMethod, compiler.backend);
+        try (DebugContext debug = openDebugContext(options, compilationId, optimizedCallTarget);
+                        DebugContext.Scope s = debug.scope("Truffle", new TruffleDebugJavaMethod(optimizedCallTarget))) {
+            compileMethod(debug, compiler, optimizedCallTarget, rootMethod, compilationId, task);
         } catch (Throwable e) {
             optimizedCallTarget.notifyCompilationFailed(e);
         } finally {
@@ -534,8 +555,47 @@ public abstract class GraalTruffleRuntime implements TruffleRuntime {
         }
     }
 
-    protected void compileMethod(OptimizedCallTarget optimizedCallTarget, CancellableCompileTask task) {
-        getTruffleCompiler().compileMethod(optimizedCallTarget, this, task);
+    protected abstract DiagnosticsOutputDirectory getDebugOutputDirectory();
+
+    /**
+     * Gets the map used to count the number of compilation failures or bailouts handled by each
+     * action.
+     * 
+     * @see CompilationWrapper#CompilationWrapper(DiagnosticsOutputDirectory, Map)
+     */
+    protected abstract Map<ExceptionAction, Integer> getCompilationProblemsPerAction();
+
+    protected final void compileMethod(DebugContext initialDebug,
+                    TruffleCompiler compiler,
+                    OptimizedCallTarget optimizedCallTarget,
+                    ResolvedJavaMethod rootMethod,
+                    CompilationIdentifier compilationId,
+                    CancellableCompileTask task) {
+
+        CompilationWrapper<Void> compilation = new CompilationWrapper<Void>(getDebugOutputDirectory(), getCompilationProblemsPerAction()) {
+
+            @Override
+            public String toString() {
+                return optimizedCallTarget.toString();
+            }
+
+            @Override
+            protected DebugContext createRetryDebugContext(OptionValues options) {
+                return openDebugContext(options, compilationId, optimizedCallTarget);
+            }
+
+            @Override
+            protected Void handleException(Throwable t) {
+                return null;
+            }
+
+            @Override
+            protected Void performCompilation(DebugContext debug) {
+                compiler.compileMethod(debug, optimizedCallTarget, rootMethod, compilationId, task);
+                return null;
+            }
+        };
+        compilation.run(initialDebug);
     }
 
     /**
@@ -561,7 +621,8 @@ public abstract class GraalTruffleRuntime implements TruffleRuntime {
                 OptimizedCallTarget callTarget = weakCallTarget.get();
                 if (callTarget != null) {
                     try (TruffleOptionsOverrideScope scope = optionOverrides != null ? overrideOptions(optionOverrides.getMap()) : null) {
-                        doCompile(callTarget, cancellable);
+                        OptionValues options = TruffleCompilerOptions.getOptions();
+                        doCompile(options, callTarget, cancellable);
                     }
                 }
             }
@@ -576,24 +637,37 @@ public abstract class GraalTruffleRuntime implements TruffleRuntime {
 
         if (!mayBeAsynchronous) {
             try {
-                future.get();
+                waitForFutureAndKeepInterrupt(future);
             } catch (ExecutionException e) {
                 if (TruffleCompilerOptions.getValue(TruffleCompilationExceptionsAreThrown) && !(e.getCause() instanceof BailoutException && !((BailoutException) e.getCause()).isPermanent())) {
                     throw new RuntimeException(e.getCause());
                 } else {
-                    // silenlty ignored
+                    // silently ignored
                 }
-            } catch (InterruptedException e) {
-                /*
-                 * Compilation cancellation happens cooperatively. A compiler thread (which is a VM
-                 * thread) must never throw an interrupted exception.
-                 */
-                GraalError.shouldNotReachHere(e);
             } catch (CancellationException e) {
                 /*
                  * Silently ignored as future might have undergone a "soft" cancel(false).
                  */
             }
+        }
+    }
+
+    private static void waitForFutureAndKeepInterrupt(Future<?> future) throws ExecutionException {
+        // We want to keep the interrupt bit if we are interrupted.
+        // But we also want to maintain the semantics of foreground compilation:
+        // waiting for the compilation to finish, even if it takes long,
+        // so that compilation errors or effects are still properly waited for.
+        boolean interrupted = false;
+        while (true) {
+            try {
+                future.get();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
         }
     }
 

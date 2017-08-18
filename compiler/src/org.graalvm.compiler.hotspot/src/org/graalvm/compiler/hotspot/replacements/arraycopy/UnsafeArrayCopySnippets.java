@@ -22,6 +22,7 @@
  */
 package org.graalvm.compiler.hotspot.replacements.arraycopy;
 
+import static jdk.vm.ci.hotspot.HotSpotJVMCIRuntimeProvider.getArrayIndexScale;
 import static org.graalvm.compiler.hotspot.GraalHotSpotVMConfig.INJECTED_VMCONFIG;
 import static org.graalvm.compiler.hotspot.replacements.HotSpotReplacementsUtil.arrayBaseOffset;
 import static org.graalvm.compiler.hotspot.replacements.HotSpotReplacementsUtil.arrayIndexScale;
@@ -31,34 +32,33 @@ import static org.graalvm.compiler.hotspot.replacements.HotSpotReplacementsUtil.
 import static org.graalvm.compiler.hotspot.replacements.HotSpotReplacementsUtil.layoutHelperLog2ElementSizeShift;
 import static org.graalvm.compiler.hotspot.replacements.HotSpotReplacementsUtil.runtime;
 import static org.graalvm.compiler.hotspot.replacements.HotSpotReplacementsUtil.wordSize;
-import static org.graalvm.compiler.nodes.NamedLocationIdentity.any;
 import static org.graalvm.compiler.nodes.extended.BranchProbabilityNode.NOT_FREQUENT_PROBABILITY;
 import static org.graalvm.compiler.nodes.extended.BranchProbabilityNode.probability;
 import static org.graalvm.compiler.replacements.SnippetTemplate.DEFAULT_REPLACER;
-
-import org.graalvm.api.word.LocationIdentity;
-import org.graalvm.api.word.Unsigned;
-import org.graalvm.api.word.WordFactory;
-
-import static jdk.vm.ci.hotspot.HotSpotJVMCIRuntimeProvider.getArrayIndexScale;
+import static org.graalvm.word.LocationIdentity.any;
 
 import org.graalvm.compiler.api.replacements.Fold;
 import org.graalvm.compiler.api.replacements.Snippet;
 import org.graalvm.compiler.core.common.NumUtil;
+import org.graalvm.compiler.debug.DebugHandlersFactory;
 import org.graalvm.compiler.hotspot.meta.HotSpotProviders;
 import org.graalvm.compiler.hotspot.phases.WriteBarrierAdditionPhase;
 import org.graalvm.compiler.nodes.NamedLocationIdentity;
-import org.graalvm.compiler.nodes.extended.UnsafeCopyNode;
 import org.graalvm.compiler.nodes.extended.RawLoadNode;
 import org.graalvm.compiler.nodes.extended.RawStoreNode;
+import org.graalvm.compiler.nodes.extended.UnsafeCopyNode;
 import org.graalvm.compiler.nodes.spi.LoweringTool;
 import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.replacements.SnippetTemplate;
 import org.graalvm.compiler.replacements.SnippetTemplate.AbstractTemplates;
 import org.graalvm.compiler.replacements.SnippetTemplate.Arguments;
 import org.graalvm.compiler.replacements.SnippetTemplate.SnippetInfo;
-import org.graalvm.compiler.word.ObjectAccess;
 import org.graalvm.compiler.replacements.Snippets;
+import org.graalvm.compiler.word.ObjectAccess;
+import org.graalvm.word.LocationIdentity;
+import org.graalvm.word.UnsignedWord;
+import org.graalvm.word.WordFactory;
+
 import jdk.vm.ci.code.TargetDescription;
 import jdk.vm.ci.meta.JavaKind;
 
@@ -237,15 +237,15 @@ public class UnsafeArrayCopySnippets implements Snippets {
         int log2ElementSize = (layoutHelper >> layoutHelperLog2ElementSizeShift(INJECTED_VMCONFIG)) & layoutHelperLog2ElementSizeMask(INJECTED_VMCONFIG);
         int headerSize = (layoutHelper >> layoutHelperHeaderSizeShift(INJECTED_VMCONFIG)) & layoutHelperHeaderSizeMask(INJECTED_VMCONFIG);
 
-        Unsigned vectorSize = WordFactory.unsigned(VECTOR_SIZE);
-        Unsigned srcOffset = WordFactory.unsigned(srcPos).shiftLeft(log2ElementSize).add(headerSize);
-        Unsigned destOffset = WordFactory.unsigned(destPos).shiftLeft(log2ElementSize).add(headerSize);
-        Unsigned destStart = destOffset;
-        Unsigned destEnd = destOffset.add(WordFactory.unsigned(length).shiftLeft(log2ElementSize));
+        UnsignedWord vectorSize = WordFactory.unsigned(VECTOR_SIZE);
+        UnsignedWord srcOffset = WordFactory.unsigned(srcPos).shiftLeft(log2ElementSize).add(headerSize);
+        UnsignedWord destOffset = WordFactory.unsigned(destPos).shiftLeft(log2ElementSize).add(headerSize);
+        UnsignedWord destStart = destOffset;
+        UnsignedWord destEnd = destOffset.add(WordFactory.unsigned(length).shiftLeft(log2ElementSize));
 
-        Unsigned destVectorEnd = null;
-        Unsigned nonVectorBytes = null;
-        Unsigned sizeInBytes = WordFactory.unsigned(length).shiftLeft(log2ElementSize);
+        UnsignedWord destVectorEnd = null;
+        UnsignedWord nonVectorBytes = null;
+        UnsignedWord sizeInBytes = WordFactory.unsigned(length).shiftLeft(log2ElementSize);
         if (supportsUnalignedMemoryAccess) {
             nonVectorBytes = sizeInBytes.unsignedRemainder(vectorSize);
             destVectorEnd = destEnd;
@@ -261,7 +261,7 @@ public class UnsafeArrayCopySnippets implements Snippets {
             destVectorEnd = destEnd.subtract(destEnd.unsignedRemainder(vectorSize));
         }
 
-        Unsigned destNonVectorEnd = destStart.add(nonVectorBytes);
+        UnsignedWord destNonVectorEnd = destStart.add(nonVectorBytes);
         while (destOffset.belowThan(destNonVectorEnd)) {
             ObjectAccess.writeByte(dest, destOffset, ObjectAccess.readByte(src, srcOffset, any()), any());
             destOffset = destOffset.add(1);
@@ -286,8 +286,8 @@ public class UnsafeArrayCopySnippets implements Snippets {
         private final SnippetInfo[] arraycopySnippets;
         private final SnippetInfo genericPrimitiveSnippet;
 
-        public Templates(OptionValues options, HotSpotProviders providers, TargetDescription target) {
-            super(options, providers, providers.getSnippetReflection(), target);
+        public Templates(OptionValues options, Iterable<DebugHandlersFactory> factories, HotSpotProviders providers, TargetDescription target) {
+            super(options, factories, providers, providers.getSnippetReflection(), target);
 
             arraycopySnippets = new SnippetInfo[JavaKind.values().length];
             arraycopySnippets[JavaKind.Boolean.ordinal()] = snippet(UnsafeArrayCopySnippets.class, "arraycopyBoolean");
@@ -317,7 +317,7 @@ public class UnsafeArrayCopySnippets implements Snippets {
             Arguments args = new Arguments(snippet, node.graph().getGuardsStage(), tool.getLoweringStage());
             node.addSnippetArguments(args);
 
-            SnippetTemplate template = template(args);
+            SnippetTemplate template = template(node.getDebug(), args);
             template.instantiate(providers.getMetaAccess(), node, DEFAULT_REPLACER, args);
         }
     }

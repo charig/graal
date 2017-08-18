@@ -22,6 +22,9 @@
  */
 package org.graalvm.compiler.truffle;
 
+import org.graalvm.options.OptionDescriptors;
+import org.graalvm.options.OptionValues;
+
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.frame.FrameDescriptor;
 import com.oracle.truffle.api.impl.TVMCI;
@@ -49,6 +52,21 @@ final class GraalTVMCI extends TVMCI {
         }
     }
 
+    @Override
+    protected boolean isGuestCallStackFrame(StackTraceElement e) {
+        return e.getMethodName().equals(OptimizedCallTarget.CALL_BOUNDARY_METHOD_NAME) && e.getClassName().equals(OptimizedCallTarget.class.getName());
+    }
+
+    @Override
+    protected OptionDescriptors getCompilerOptionDescriptors() {
+        return PolyglotCompilerOptions.getDescriptors();
+    }
+
+    @Override
+    protected OptionValues getCompilerOptionValues(RootNode rootNode) {
+        return super.getCompilerOptionValues(rootNode);
+    }
+
     void onFirstExecution(OptimizedCallTarget callTarget) {
         super.onFirstExecution(callTarget.getRootNode());
     }
@@ -61,6 +79,11 @@ final class GraalTVMCI extends TVMCI {
     @Override
     protected void markFrameMaterializeCalled(FrameDescriptor descriptor) {
         super.markFrameMaterializeCalled(descriptor);
+    }
+
+    @Override
+    protected void onThrowable(RootNode root, Throwable e) {
+        super.onThrowable(root, e);
     }
 
     @Override

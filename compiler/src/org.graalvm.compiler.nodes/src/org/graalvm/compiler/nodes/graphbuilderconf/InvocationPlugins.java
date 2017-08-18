@@ -709,14 +709,42 @@ public class InvocationPlugins {
         return null;
     }
 
+    @SuppressWarnings("serial")
+    static class InvocationPlugRegistrationError extends GraalError {
+        InvocationPlugRegistrationError(Throwable cause) {
+            super(cause);
+        }
+    }
+
     private void flushDeferrables() {
         if (deferredRegistrations != null) {
             synchronized (this) {
                 if (deferredRegistrations != null) {
-                    for (Runnable deferrable : deferredRegistrations) {
-                        deferrable.run();
+                    try {
+                        for (Runnable deferrable : deferredRegistrations) {
+                            deferrable.run();
+                        }
+                        deferredRegistrations = null;
+                    } catch (InvocationPlugRegistrationError t) {
+                        throw t;
+                    } catch (Throwable t) {
+                        /*
+                         * Something went wrong during registration but it's possible we'll end up
+                         * coming back into this code. nulling out deferredRegistrations would just
+                         * cause other things to break and rerunning them would cause errors about
+                         * already registered plugins, so rethrow the original exception during
+                         * later invocations.
+                         */
+                        deferredRegistrations.clear();
+                        Runnable rethrow = new Runnable() {
+                            @Override
+                            public void run() {
+                                throw new InvocationPlugRegistrationError(t);
+                            }
+                        };
+                        deferredRegistrations.add(rethrow);
+                        rethrow.run();
                     }
-                    deferredRegistrations = null;
                 }
             }
         }
@@ -1064,7 +1092,7 @@ public class InvocationPlugins {
         static final Class<?>[][] SIGS;
 
         static {
-            if (!Assertions.ENABLED) {
+            if (!Assertions.assertionsEnabled()) {
                 throw new GraalError("%s must only be used in assertions", Checks.class.getName());
             }
             ArrayList<Class<?>[]> sigs = new ArrayList<>(MAX_ARITY);

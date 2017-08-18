@@ -22,15 +22,13 @@
  */
 package org.graalvm.compiler.loop;
 
-import java.util.Collection;
-import java.util.LinkedList;
-import java.util.Queue;
-
+import jdk.vm.ci.code.BytecodeFrame;
 import org.graalvm.compiler.core.common.calc.Condition;
 import org.graalvm.compiler.core.common.cfg.Loop;
 import org.graalvm.compiler.core.common.type.IntegerStamp;
-import org.graalvm.compiler.debug.Debug;
+import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.GraalError;
+import org.graalvm.compiler.graph.Graph;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.NodeBitMap;
 import org.graalvm.compiler.graph.iterators.NodePredicate;
@@ -46,7 +44,6 @@ import org.graalvm.compiler.nodes.FullInfopointNode;
 import org.graalvm.compiler.nodes.IfNode;
 import org.graalvm.compiler.nodes.LogicNode;
 import org.graalvm.compiler.nodes.LoopBeginNode;
-import org.graalvm.compiler.nodes.LoopExitNode;
 import org.graalvm.compiler.nodes.PhiNode;
 import org.graalvm.compiler.nodes.PiNode;
 import org.graalvm.compiler.nodes.StructuredGraph;
@@ -73,7 +70,9 @@ import org.graalvm.util.EconomicMap;
 import org.graalvm.util.EconomicSet;
 import org.graalvm.util.Equivalence;
 
-import jdk.vm.ci.code.BytecodeFrame;
+import java.util.Collection;
+import java.util.LinkedList;
+import java.util.Queue;
 
 public class LoopEx {
     private final Loop<Block> loop;
@@ -165,32 +164,46 @@ public class LoopEx {
 
     private class InvariantPredicate implements NodePredicate {
 
+        private final Graph.Mark mark;
+
+        InvariantPredicate() {
+            this.mark = loopBegin().graph().getMark();
+        }
+
         @Override
         public boolean apply(Node n) {
+            if (loopBegin().graph().isNew(mark, n)) {
+                // Newly created nodes are unknown.
+                return false;
+            }
             return isOutsideLoop(n);
         }
     }
 
-    public void reassociateInvariants() {
-        InvariantPredicate invariant = new InvariantPredicate();
+    public boolean reassociateInvariants() {
+        int count = 0;
         StructuredGraph graph = loopBegin().graph();
+        InvariantPredicate invariant = new InvariantPredicate();
         for (BinaryArithmeticNode<?> binary : whole().nodes().filter(BinaryArithmeticNode.class)) {
             if (!binary.isAssociative()) {
                 continue;
             }
             ValueNode result = BinaryArithmeticNode.reassociate(binary, invariant, binary.getX(), binary.getY());
             if (result != binary) {
-                if (Debug.isLogEnabled()) {
-                    Debug.log("%s : Reassociated %s into %s", graph.method().format("%H::%n"), binary, result);
-                }
                 if (!result.isAlive()) {
                     assert !result.isDeleted();
                     result = graph.addOrUniqueWithInputs(result);
                 }
+                DebugContext debug = graph.getDebug();
+                if (debug.isLogEnabled()) {
+                    debug.log("%s : Reassociated %s into %s", graph.method().format("%H::%n"), binary, result);
+                }
                 binary.replaceAtUsages(result);
                 GraphUtil.killWithUnusedFloatingInputs(binary);
+                count++;
             }
         }
+        return count != 0;
     }
 
     public boolean detectCounted() {
@@ -211,7 +224,7 @@ public class LoopEx {
             LogicNode ifTest = ifNode.condition();
             if (!(ifTest instanceof IntegerLessThanNode) && !(ifTest instanceof IntegerEqualsNode)) {
                 if (ifTest instanceof IntegerBelowNode) {
-                    Debug.log("Ignored potential Counted loop at %s with |<|", loopBegin);
+                    ifTest.getDebug().log("Ignored potential Counted loop at %s with |<|", loopBegin);
                 }
                 return false;
             }
@@ -286,7 +299,7 @@ public class LoopEx {
                 default:
                     throw GraalError.shouldNotReachHere();
             }
-            counted = new CountedLoopInfo(this, iv, limit, oneOff, negated ? ifNode.falseSuccessor() : ifNode.trueSuccessor());
+            counted = new CountedLoopInfo(this, iv, ifNode, limit, oneOff, negated ? ifNode.falseSuccessor() : ifNode.trueSuccessor());
             return true;
         }
         return false;
@@ -298,7 +311,7 @@ public class LoopEx {
 
     public void nodesInLoopBranch(NodeBitMap branchNodes, AbstractBeginNode branch) {
         EconomicSet<AbstractBeginNode> blocks = EconomicSet.create();
-        Collection<LoopExitNode> exits = new LinkedList<>();
+        Collection<AbstractBeginNode> exits = new LinkedList<>();
         Queue<Block> work = new LinkedList<>();
         ControlFlowGraph cfg = loopsData().getCFG();
         work.add(cfg.blockFor(branch));
@@ -306,7 +319,7 @@ public class LoopEx {
             Block b = work.remove();
             if (loop().getExits().contains(b)) {
                 assert !exits.contains(b.getBeginNode());
-                exits.add((LoopExitNode) b.getBeginNode());
+                exits.add(b.getBeginNode());
             } else if (blocks.add(b.getBeginNode())) {
                 Block d = b.getDominatedSibling();
                 while (d != null) {

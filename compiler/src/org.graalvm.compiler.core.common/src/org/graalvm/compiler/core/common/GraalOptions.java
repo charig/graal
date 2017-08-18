@@ -22,10 +22,9 @@
  */
 package org.graalvm.compiler.core.common;
 
-import org.graalvm.compiler.debug.Assertions;
 import org.graalvm.compiler.options.Option;
-import org.graalvm.compiler.options.OptionType;
 import org.graalvm.compiler.options.OptionKey;
+import org.graalvm.compiler.options.OptionType;
 
 /**
  * This class encapsulates options that control the behavior of the Graal compiler.
@@ -108,6 +107,9 @@ public final class GraalOptions {
 
     @Option(help = "", type = OptionType.Debug)
     public static final OptionKey<Boolean> LoopUnswitch = new OptionKey<>(true);
+
+    @Option(help = "", type = OptionType.Debug)
+    public static final OptionKey<Boolean> PartialUnroll = new OptionKey<>(true);
 
     @Option(help = "", type = OptionType.Expert)
     public static final OptionKey<Float> MinimumPeelProbability = new OptionKey<>(0.35f);
@@ -265,9 +267,6 @@ public final class GraalOptions {
 
     @Option(help = "Use a cache for snippet graphs.", type = OptionType.Debug)
     public static final OptionKey<Boolean> UseSnippetGraphCache = new OptionKey<>(true);
-
-    @Option(help = "Enable expensive assertions.", type = OptionType.Debug)
-    public static final OptionKey<Boolean> DetailedAsserts = new OptionKey<>(Assertions.ENABLED);
 
     @Option(help = "Enable experimental Trace Register Allocation.", type = OptionType.Debug)
     public static final OptionKey<Boolean> TraceRA = new OptionKey<>(false);

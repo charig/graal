@@ -38,12 +38,10 @@ import java.lang.reflect.Modifier;
 import java.math.BigInteger;
 import java.util.zip.CRC32;
 
-import org.graalvm.api.word.LocationIdentity;
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
 import org.graalvm.compiler.bytecode.BytecodeProvider;
 import org.graalvm.compiler.core.common.spi.ForeignCallsProvider;
 import org.graalvm.compiler.debug.GraalError;
-import org.graalvm.compiler.hotspot.FingerprintUtil;
 import org.graalvm.compiler.hotspot.GraalHotSpotVMConfig;
 import org.graalvm.compiler.hotspot.nodes.CurrentJavaThreadNode;
 import org.graalvm.compiler.hotspot.replacements.AESCryptSubstitutions;
@@ -100,6 +98,7 @@ import org.graalvm.compiler.serviceprovider.GraalServices;
 import org.graalvm.compiler.serviceprovider.JDK9Method;
 import org.graalvm.compiler.word.WordOperationPlugin;
 import org.graalvm.compiler.word.WordTypes;
+import org.graalvm.word.LocationIdentity;
 
 import jdk.vm.ci.code.CodeUtil;
 import jdk.vm.ci.hotspot.HotSpotObjectConstant;
@@ -148,7 +147,7 @@ public class HotSpotGraphBuilderPlugins {
                         return false;
                     }
                     // check if the holder has a valid fingerprint
-                    if (FingerprintUtil.getFingerprint((HotSpotResolvedObjectType) method.getDeclaringClass()) == 0) {
+                    if (((HotSpotResolvedObjectType) method.getDeclaringClass()).getFingerprint() == 0) {
                         // Deopt otherwise
                         b.append(new DeoptimizeNode(InvalidateRecompile, Unresolved));
                         return true;
@@ -163,7 +162,7 @@ public class HotSpotGraphBuilderPlugins {
                             if (clazz.equals(String.class)) {
                                 return false;
                             }
-                            if (Class.class.isAssignableFrom(clazz) && FingerprintUtil.getFingerprint((HotSpotResolvedObjectType) type) != 0) {
+                            if (Class.class.isAssignableFrom(clazz) && ((HotSpotResolvedObjectType) type).getFingerprint() != 0) {
                                 return false;
                             }
                             b.append(new DeoptimizeNode(InvalidateRecompile, Unresolved));

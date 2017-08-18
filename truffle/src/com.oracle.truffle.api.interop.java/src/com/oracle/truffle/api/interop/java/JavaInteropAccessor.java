@@ -38,7 +38,7 @@ final class JavaInteropAccessor extends Accessor {
         return new JavaInteropSupport() {
             @Override
             public Node createToJavaNode() {
-                return ToJavaNodeGen.create();
+                return ToJavaNode.create();
             }
 
             @Override
@@ -46,11 +46,15 @@ final class JavaInteropAccessor extends Accessor {
                 ToJavaNode toJavaNode = (ToJavaNode) javaNode;
                 return toJavaNode.execute(value, new TypeAndClass<>(null, type));
             }
+
+            @Override
+            public Object toJavaGuestObject(Object obj, Object languageContext) {
+                return JavaInterop.asTruffleObject(obj, languageContext);
+            }
         };
     }
 
     InteropSupport interop() {
         return interopSupport();
     }
-
 }
