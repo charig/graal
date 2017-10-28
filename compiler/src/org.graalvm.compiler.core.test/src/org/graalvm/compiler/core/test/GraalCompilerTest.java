@@ -389,7 +389,7 @@ public abstract class GraalCompilerTest extends GraalTest {
      * {@link DebugDumpHandler}s closed in {@link #afterTest()}.
      */
     protected DebugContext getDebugContext() {
-        return getDebugContext(getInitialOptions());
+        return getDebugContext(getInitialOptions(), null, null);
     }
 
     @Override
@@ -949,7 +949,7 @@ public abstract class GraalCompilerTest extends GraalTest {
 
             try (AllocSpy spy = AllocSpy.open(installedCodeOwner); DebugContext.Scope ds = debug.scope("Compiling", new DebugDumpScope(id.toString(CompilationIdentifier.Verbosity.ID), true))) {
                 CompilationPrinter printer = CompilationPrinter.begin(options, id, installedCodeOwner, INVOCATION_ENTRY_BCI);
-                CompilationResult compResult = compile(installedCodeOwner, graphToCompile, new CompilationResult(), id, options);
+                CompilationResult compResult = compile(installedCodeOwner, graphToCompile, new CompilationResult(graphToCompile.compilationId()), id, options);
                 printer.finish(compResult);
 
                 try (DebugContext.Scope s = debug.scope("CodeInstall", getCodeCache(), installedCodeOwner, compResult);
@@ -1019,17 +1019,19 @@ public abstract class GraalCompilerTest extends GraalTest {
      */
     protected final CompilationResult compile(ResolvedJavaMethod installedCodeOwner, StructuredGraph graph) {
         OptionValues options = graph == null ? getInitialOptions() : graph.getOptions();
-        return compile(installedCodeOwner, graph, new CompilationResult(), getOrCreateCompilationId(installedCodeOwner, graph), options);
+        CompilationIdentifier compilationId = getOrCreateCompilationId(installedCodeOwner, graph);
+        return compile(installedCodeOwner, graph, new CompilationResult(compilationId), compilationId, options);
     }
 
     protected final CompilationResult compile(ResolvedJavaMethod installedCodeOwner, StructuredGraph graph, CompilationIdentifier compilationId) {
         OptionValues options = graph == null ? getInitialOptions() : graph.getOptions();
-        return compile(installedCodeOwner, graph, new CompilationResult(), compilationId, options);
+        return compile(installedCodeOwner, graph, new CompilationResult(compilationId), compilationId, options);
     }
 
     protected final CompilationResult compile(ResolvedJavaMethod installedCodeOwner, StructuredGraph graph, OptionValues options) {
         assert graph == null || graph.getOptions() == options;
-        return compile(installedCodeOwner, graph, new CompilationResult(), getOrCreateCompilationId(installedCodeOwner, graph), options);
+        CompilationIdentifier compilationId = getOrCreateCompilationId(installedCodeOwner, graph);
+        return compile(installedCodeOwner, graph, new CompilationResult(compilationId), compilationId, options);
     }
 
     /**
@@ -1214,15 +1216,15 @@ public abstract class GraalCompilerTest extends GraalTest {
 
     protected final Builder builder(ResolvedJavaMethod method, AllowAssumptions allowAssumptions) {
         OptionValues options = getInitialOptions();
-        return new Builder(options, getDebugContext(options), allowAssumptions).method(method).compilationId(getCompilationId(method));
+        return new Builder(options, getDebugContext(options, null, method), allowAssumptions).method(method).compilationId(getCompilationId(method));
     }
 
     protected final Builder builder(ResolvedJavaMethod method, AllowAssumptions allowAssumptions, CompilationIdentifier compilationId, OptionValues options) {
-        return new Builder(options, getDebugContext(options), allowAssumptions).method(method).compilationId(compilationId);
+        return new Builder(options, getDebugContext(options, compilationId.toString(CompilationIdentifier.Verbosity.ID), method), allowAssumptions).method(method).compilationId(compilationId);
     }
 
     protected final Builder builder(ResolvedJavaMethod method, AllowAssumptions allowAssumptions, OptionValues options) {
-        return new Builder(options, getDebugContext(options), allowAssumptions).method(method).compilationId(getCompilationId(method));
+        return new Builder(options, getDebugContext(options, null, method), allowAssumptions).method(method).compilationId(getCompilationId(method));
     }
 
     protected PhaseSuite<HighTierContext> getDebugGraphBuilderSuite() {
@@ -1232,6 +1234,7 @@ public abstract class GraalCompilerTest extends GraalTest {
     @SuppressWarnings("try")
     protected StructuredGraph parse(StructuredGraph.Builder builder, PhaseSuite<HighTierContext> graphBuilderSuite) {
         ResolvedJavaMethod javaMethod = builder.getMethod();
+        builder.speculationLog(getSpeculationLog());
         if (builder.getCancellable() == null) {
             builder.cancellable(getCancellable(javaMethod));
         }
@@ -1247,7 +1250,7 @@ public abstract class GraalCompilerTest extends GraalTest {
     }
 
     protected PhaseSuite<HighTierContext> getEagerGraphBuilderSuite() {
-        return getCustomGraphBuilderSuite(GraphBuilderConfiguration.getDefault(getDefaultGraphBuilderPlugins()).withEagerResolving(true));
+        return getCustomGraphBuilderSuite(GraphBuilderConfiguration.getDefault(getDefaultGraphBuilderPlugins()).withEagerResolving(true).withUnresolvedIsError(true));
     }
 
     /**

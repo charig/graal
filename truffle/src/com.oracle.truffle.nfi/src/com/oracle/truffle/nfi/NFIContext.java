@@ -75,7 +75,7 @@ class NFIContext {
         @Override
         public NativeEnv get() {
             NativeEnv ret = new NativeEnv(initializeNativeEnv(nativeContext));
-            NativeAllocation.registerNativeAllocation(ret, new FreeDestructor(ret.pointer));
+            NativeAllocation.getGlobalQueue().registerNativeAllocation(ret, new FreeDestructor(ret.pointer));
             return ret;
         }
     }
@@ -91,6 +91,7 @@ class NFIContext {
 
     void initialize() {
         loadNFILib();
+        NativeAllocation.ensureGCThreadRunning();
         nativeContext = initializeNativeContext();
         nativeEnv = ThreadLocal.withInitial(new NativeEnvSupplier());
     }
@@ -99,6 +100,7 @@ class NFIContext {
         disposeNativeContext(nativeContext);
         nativeContext = 0;
         nativeEnv = null;
+        nativePointerMap.clear();
     }
 
     private ClosureNativePointer getClosureNativePointer(long codePointer) {
@@ -114,8 +116,8 @@ class NFIContext {
     }
 
     // called from native
-    ClosureNativePointer createClosureNativePointer(long nativeClosure, long codePointer) {
-        ClosureNativePointer ret = new ClosureNativePointer(this, nativeClosure, codePointer);
+    ClosureNativePointer createClosureNativePointer(long nativeClosure, long codePointer, CallTarget callTarget, LibFFISignature signature) {
+        ClosureNativePointer ret = ClosureNativePointer.create(this, nativeClosure, codePointer, callTarget, signature);
         synchronized (nativePointerMap) {
             nativePointerMap.put(codePointer, ret);
         }
@@ -129,7 +131,7 @@ class NFIContext {
 
     // called from native
     void releaseClosureRef(long codePointer) {
-        getClosureNativePointer(codePointer).destroy();
+        getClosureNativePointer(codePointer).releaseRef();
     }
 
     // called from native

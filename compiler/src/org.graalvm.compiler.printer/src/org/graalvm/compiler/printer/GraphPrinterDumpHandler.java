@@ -25,7 +25,6 @@ package org.graalvm.compiler.printer;
 import static org.graalvm.compiler.debug.DebugConfig.asJavaMethod;
 
 import java.io.IOException;
-import java.lang.management.ManagementFactory;
 import java.nio.channels.ClosedByInterruptException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -53,8 +52,8 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 //JaCoCo Exclude
 
 /**
- * Observes compilation events and uses {@link IdealGraphPrinter} to generate a graph representation
- * that can be inspected with the Graph Visualizer.
+ * Observes compilation events and uses {@link BinaryGraphPrinter} to generate a graph
+ * representation that can be inspected with the Graph Visualizer.
  */
 public class GraphPrinterDumpHandler implements DebugDumpHandler {
 
@@ -70,7 +69,7 @@ public class GraphPrinterDumpHandler implements DebugDumpHandler {
 
     @FunctionalInterface
     public interface GraphPrinterSupplier {
-        GraphPrinter get(Graph graph) throws IOException;
+        GraphPrinter get(DebugContext ctx, Graph graph) throws IOException;
     }
 
     /**
@@ -82,11 +81,19 @@ public class GraphPrinterDumpHandler implements DebugDumpHandler {
     public GraphPrinterDumpHandler(GraphPrinterSupplier printerSupplier) {
         this.printerSupplier = printerSupplier;
         /* Add the JVM and Java arguments to the graph properties to help identify it. */
-        this.jvmArguments = String.join(" ", ManagementFactory.getRuntimeMXBean().getInputArguments());
+        this.jvmArguments = jvmArguments();
         this.sunJavaCommand = System.getProperty("sun.java.command");
     }
 
-    private void ensureInitialized(Graph graph) {
+    private static String jvmArguments() {
+        try {
+            return String.join(" ", java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments());
+        } catch (LinkageError err) {
+            return "unknown";
+        }
+    }
+
+    private void ensureInitialized(DebugContext ctx, Graph graph) {
         if (printer == null) {
             if (failuresCount >= FAILURE_LIMIT) {
                 return;
@@ -95,7 +102,7 @@ public class GraphPrinterDumpHandler implements DebugDumpHandler {
             inlineContextMap = new WeakHashMap<>();
             DebugContext debug = graph.getDebug();
             try {
-                printer = printerSupplier.get(graph);
+                printer = printerSupplier.get(ctx, graph);
             } catch (IOException e) {
                 handleException(debug, e);
             }
@@ -116,7 +123,7 @@ public class GraphPrinterDumpHandler implements DebugDumpHandler {
         OptionValues options = debug.getOptions();
         if (object instanceof Graph && DebugOptions.PrintGraph.getValue(options)) {
             final Graph graph = (Graph) object;
-            ensureInitialized(graph);
+            ensureInitialized(debug, graph);
             if (printer == null) {
                 return;
             }

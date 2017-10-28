@@ -26,7 +26,6 @@ import static org.graalvm.compiler.graph.Edges.Type.Inputs;
 import static org.graalvm.compiler.graph.Edges.Type.Successors;
 
 import java.io.IOException;
-import java.nio.channels.WritableByteChannel;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -79,8 +78,8 @@ public class BinaryGraphPrinter implements
     private final SnippetReflectionProvider snippetReflection;
     private final GraphOutput<BinaryGraphPrinter.GraphInfo, ResolvedJavaMethod> output;
 
-    public BinaryGraphPrinter(WritableByteChannel channel, SnippetReflectionProvider snippetReflection) throws IOException {
-        this.output = GraphOutput.newBuilder(this).blocks(this).elements(this).types(this).build(channel);
+    public BinaryGraphPrinter(DebugContext ctx, SnippetReflectionProvider snippetReflection) throws IOException {
+        this.output = ctx.buildOutput(GraphOutput.newBuilder(this).protocolVersion(5, 0).blocks(this).elements(this).types(this));
         this.snippetReflection = snippetReflection;
     }
 
@@ -116,14 +115,21 @@ public class BinaryGraphPrinter implements
     }
 
     @Override
+    public Node node(Object obj) {
+        return obj instanceof Node ? (Node) obj : null;
+    }
+
+    @Override
     public NodeClass<?> nodeClass(Object obj) {
         if (obj instanceof NodeClass<?>) {
             return (NodeClass<?>) obj;
         }
-        if (obj instanceof Node) {
-            return ((Node) obj).getNodeClass();
-        }
         return null;
+    }
+
+    @Override
+    public NodeClass<?> classForNode(Node node) {
+        return node.getNodeClass();
     }
 
     @Override
@@ -366,7 +372,7 @@ public class BinaryGraphPrinter implements
             return ((Class<?>) obj).getName();
         }
         if (obj instanceof ResolvedJavaType) {
-            return ((ResolvedJavaType) obj).getName();
+            return ((ResolvedJavaType) obj).toJavaName();
         }
         return null;
     }
@@ -403,7 +409,7 @@ public class BinaryGraphPrinter implements
 
     @Override
     public String fieldTypeName(ResolvedJavaField field) {
-        return field.getType().getName();
+        return field.getType().toJavaName();
     }
 
     @Override

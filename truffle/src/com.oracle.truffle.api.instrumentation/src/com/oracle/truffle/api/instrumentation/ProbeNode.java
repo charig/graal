@@ -359,6 +359,9 @@ public final class ProbeNode extends Node {
         protected abstract void innerOnEnter(EventContext context, VirtualFrame frame);
 
         final void onReturnValue(EventContext context, VirtualFrame frame, Object result) {
+            if (next != null) {
+                next.onReturnValue(context, frame, result);
+            }
             try {
                 innerOnReturnValue(context, frame, result);
             } catch (Throwable t) {
@@ -373,14 +376,14 @@ public final class ProbeNode extends Node {
                     exceptionEventForClientInstrument(binding, "onReturnValue", t);
                 }
             }
-            if (next != null) {
-                next.onReturnValue(context, frame, result);
-            }
         }
 
         protected abstract void innerOnReturnValue(EventContext context, VirtualFrame frame, Object result);
 
         final void onReturnExceptional(EventContext context, VirtualFrame frame, Throwable exception) {
+            if (next != null) {
+                next.onReturnExceptional(context, frame, exception);
+            }
             try {
                 innerOnReturnExceptional(context, frame, exception);
             } catch (Throwable t) {
@@ -395,9 +398,6 @@ public final class ProbeNode extends Node {
                     exceptionEventForClientInstrument(binding, "onReturnExceptional", t);
 
                 }
-            }
-            if (next != null) {
-                next.onReturnExceptional(context, frame, exception);
             }
         }
 

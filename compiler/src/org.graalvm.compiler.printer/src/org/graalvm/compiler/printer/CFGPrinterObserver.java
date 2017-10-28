@@ -23,13 +23,13 @@
 package org.graalvm.compiler.printer;
 
 import static org.graalvm.compiler.debug.DebugOptions.PrintCFG;
-import static org.graalvm.compiler.printer.GraalDebugHandlersFactory.createDumpPath;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -37,6 +37,7 @@ import java.util.List;
 import org.graalvm.compiler.bytecode.BytecodeDisassembler;
 import org.graalvm.compiler.code.CompilationResult;
 import org.graalvm.compiler.code.DisassemblerProvider;
+import org.graalvm.compiler.core.common.CompilationIdentifier;
 import org.graalvm.compiler.core.common.alloc.Trace;
 import org.graalvm.compiler.core.common.alloc.TraceBuilderResult;
 import org.graalvm.compiler.core.common.cfg.AbstractBlockBase;
@@ -62,6 +63,8 @@ import jdk.vm.ci.code.CodeCacheProvider;
 import jdk.vm.ci.code.InstalledCode;
 import jdk.vm.ci.meta.JavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import org.graalvm.compiler.debug.DebugOptions;
+import static org.graalvm.compiler.debug.PathUtilities.getGlobalTimeStamp;
 
 /**
  * Observes compilation events and uses {@link CFGPrinter} to produce a control flow graph for the
@@ -72,6 +75,7 @@ public class CFGPrinterObserver implements DebugDumpHandler {
     private CFGPrinter cfgPrinter;
     private File cfgFile;
     private JavaMethod curMethod;
+    private CompilationIdentifier curCompilation;
     private List<String> curDecorators = Collections.emptyList();
 
     @Override
@@ -92,6 +96,7 @@ public class CFGPrinterObserver implements DebugDumpHandler {
      */
     private boolean checkMethodScope(DebugContext debug) {
         JavaMethod method = null;
+        CompilationIdentifier compilation = null;
         ArrayList<String> decorators = new ArrayList<>();
         for (Object o : debug.context()) {
             if (o instanceof JavaMethod) {
@@ -102,22 +107,33 @@ public class CFGPrinterObserver implements DebugDumpHandler {
                 if (graph.method() != null) {
                     method = graph.method();
                     decorators.clear();
+                    compilation = graph.compilationId();
                 }
             } else if (o instanceof DebugDumpScope) {
                 DebugDumpScope debugDumpScope = (DebugDumpScope) o;
                 if (debugDumpScope.decorator) {
                     decorators.add(debugDumpScope.name);
                 }
+            } else if (o instanceof CompilationResult) {
+                CompilationResult compilationResult = (CompilationResult) o;
+                compilation = compilationResult.getCompilationId();
             }
         }
 
-        if (method == null) {
+        if (method == null && compilation == null) {
             return false;
         }
 
-        if (!method.equals(curMethod) || !curDecorators.equals(decorators)) {
-            cfgPrinter.printCompilation(method);
+        if (compilation != null) {
+            if (!compilation.equals(curCompilation) || !curDecorators.equals(decorators)) {
+                cfgPrinter.printCompilation(compilation);
+            }
+        } else {
+            if (!method.equals(curMethod) || !curDecorators.equals(decorators)) {
+                cfgPrinter.printCompilation(method);
+            }
         }
+        curCompilation = compilation;
         curMethod = method;
         curDecorators = decorators;
         return true;
@@ -139,8 +155,12 @@ public class CFGPrinterObserver implements DebugDumpHandler {
 
         if (cfgPrinter == null) {
             try {
-                Graph graph = debug.contextLookupTopdown(Graph.class);
-                cfgFile = createDumpPath(options, graph, "cfg", false).toFile();
+                String ext = ".cfg";
+                String name = String.format("%s-%d_%s", DebugOptions.DumpPath.getValue(options), getGlobalTimeStamp(), ext);
+                int slash = name.lastIndexOf('/');
+                name = name.substring(slash + 1);
+                Path dumpDir = DebugOptions.getDumpDirectory(options);
+                cfgFile = new File(dumpDir.toFile(), name);
                 OutputStream out = new BufferedOutputStream(new FileOutputStream(cfgFile));
                 cfgPrinter = new CFGPrinter(out);
             } catch (IOException e) {
@@ -277,6 +297,7 @@ public class CFGPrinterObserver implements DebugDumpHandler {
             cfgPrinter = null;
             curDecorators = Collections.emptyList();
             curMethod = null;
+            curCompilation = null;
         }
     }
 

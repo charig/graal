@@ -61,6 +61,9 @@ import org.graalvm.util.EconomicSet;
 import org.graalvm.util.Pair;
 
 import jdk.vm.ci.meta.JavaMethod;
+import static org.graalvm.compiler.debug.DebugOptions.DumpPath;
+import static org.graalvm.compiler.debug.DebugOptions.ShowDumpFiles;
+import org.graalvm.graphio.GraphOutput;
 
 /**
  * A facility for logging and dumping as well as a container for values associated with
@@ -98,6 +101,8 @@ public final class DebugContext implements AutoCloseable {
     CloseableCounter currentMemUseTracker;
     Scope lastClosedScope;
     Throwable lastExceptionThrown;
+    private IgvDumpChannel sharedChannel;
+    private GraphOutput<?, ?> parentOutput;
 
     /**
      * Stores the {@link MetricKey} values.
@@ -109,6 +114,19 @@ public final class DebugContext implements AutoCloseable {
      */
     public boolean areScopesEnabled() {
         return immutable.scopesEnabled;
+    }
+
+    public <G, N, M> GraphOutput<G, M> buildOutput(GraphOutput.Builder<G, N, M> builder) throws IOException {
+        if (parentOutput != null) {
+            return builder.build(parentOutput);
+        } else {
+            if (sharedChannel == null) {
+                sharedChannel = new IgvDumpChannel(this::getFilePrinterPath, immutable.options);
+            }
+            final GraphOutput<G, M> output = builder.build(sharedChannel);
+            parentOutput = output;
+            return output;
+        }
     }
 
     /**
@@ -198,9 +216,22 @@ public final class DebugContext implements AutoCloseable {
 
         private Immutable(OptionValues options) {
             this.options = options;
+            String timeValue = Time.getValue(options);
+            String trackMemUseValue = TrackMemUse.getValue(options);
             this.unscopedCounters = parseUnscopedMetricSpec(Counters.getValue(options), "".equals(Count.getValue(options)), false);
-            this.unscopedTimers = parseUnscopedMetricSpec(Timers.getValue(options), "".equals(Time.getValue(options)), true);
-            this.unscopedMemUseTrackers = parseUnscopedMetricSpec(MemUseTrackers.getValue(options), "".equals(TrackMemUse.getValue(options)), true);
+            this.unscopedTimers = parseUnscopedMetricSpec(Timers.getValue(options), "".equals(timeValue), true);
+            this.unscopedMemUseTrackers = parseUnscopedMetricSpec(MemUseTrackers.getValue(options), "".equals(trackMemUseValue), true);
+
+            if (unscopedTimers != null ||
+                            unscopedMemUseTrackers != null ||
+                            timeValue != null ||
+                            trackMemUseValue != null) {
+                try {
+                    Class.forName("java.lang.management.ManagementFactory");
+                } catch (ClassNotFoundException ex) {
+                    throw new IllegalArgumentException("Time, Timers, MemUseTrackers and TrackMemUse options require java.management module");
+                }
+            }
 
             this.scopesEnabled = DumpOnError.getValue(options) ||
                             Dump.getValue(options) != null ||
@@ -310,6 +341,14 @@ public final class DebugContext implements AutoCloseable {
             String compilableName = compilable instanceof JavaMethod ? ((JavaMethod) compilable).format("%H.%n(%p)%R") : String.valueOf(compilable);
             return identifier + ":" + compilableName;
         }
+
+        final String getLabel() {
+            if (compilable instanceof JavaMethod) {
+                JavaMethod method = (JavaMethod) compilable;
+                return method.format("%h.%n(%p)%r");
+            }
+            return String.valueOf(compilable);
+        }
     }
 
     private final Description description;
@@ -378,6 +417,20 @@ public final class DebugContext implements AutoCloseable {
             metricsEnabled = true;
         } else {
             metricsEnabled = immutable.hasUnscopedMetrics() || immutable.listMetrics;
+        }
+    }
+
+    private Path getFilePrinterPath() {
+        try {
+            String id = description == null ? null : description.identifier;
+            String label = description == null ? null : description.getLabel();
+            Path result = PathUtilities.createUnique(immutable.options, DumpPath, id, label, ".bgv", false);
+            if (ShowDumpFiles.getValue(immutable.options)) {
+                TTY.println("Dumping debug output to %s", result.toAbsolutePath().toString());
+            }
+            return result;
+        } catch (IOException ex) {
+            throw rethrowSilently(RuntimeException.class, ex);
         }
     }
 
@@ -2029,5 +2082,10 @@ public final class DebugContext implements AutoCloseable {
             out.printf("%-" + String.valueOf(maxKeyWidth) + "s = %20s%n", e.getKey(), e.getValue());
         }
         out.println();
+    }
+
+    @SuppressWarnings({"unused", "unchecked"})
+    private static <E extends Exception> E rethrowSilently(Class<E> type, Throwable ex) throws E {
+        throw (E) ex;
     }
 }

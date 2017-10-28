@@ -910,10 +910,7 @@ class SpecJvm2008BenchmarkSuite(mx_benchmark.JavaBenchmarkSuite):
     def createCommandLineArgs(self, benchmarks, bmSuiteArgs):
         if benchmarks is None:
             # No benchmark specified in the command line, so run everything.
-            benchmarks = [b for b in self.benchmarkList(bmSuiteArgs) if b != 'batik']
-        elif 'batik' in benchmarks:
-            mx.warn('Omitting batik as it uses Sun proprietary API not supported by OpenJDK')
-            benchmarks = [b for b in benchmarks if b != 'batik']
+            benchmarks = [b for b in self.benchmarkList(bmSuiteArgs)]
 
         vmArgs = self.vmArgs(bmSuiteArgs)
         runArgs = self.runArgs(bmSuiteArgs)
@@ -1337,6 +1334,10 @@ class JMHDistWhiteboxBenchmarkSuite(mx_benchmark.JMHDistBenchmarkSuite):
 
     def extraVmArgs(self):
         return ['-XX:-UseJVMCIClassLoader'] + super(JMHDistWhiteboxBenchmarkSuite, self).extraVmArgs()
+
+    def getJMHEntry(self, bmSuiteArgs):
+        assert self.dist
+        return [mx.distribution(self.dist).mainClass]
 
 
 mx_benchmark.add_bm_suite(JMHDistWhiteboxBenchmarkSuite())

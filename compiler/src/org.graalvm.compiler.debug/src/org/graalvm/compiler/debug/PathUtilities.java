@@ -22,7 +22,10 @@
  */
 package org.graalvm.compiler.debug;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -133,7 +136,8 @@ public class PathUtilities {
             return result;
         }
         Path dumpDir = DebugOptions.getDumpDirectory(options);
-        return dumpDir.resolve(name).normalize();
+        final Path fileName = Paths.get(dumpDir.toString(), name);
+        return fileName.normalize();
     }
 
     /**
@@ -162,4 +166,61 @@ public class PathUtilities {
         }
         return buf.toString();
     }
+
+    /**
+     * A maximum file name length supported by most file systems. There is no platform independent
+     * way to get this in Java.
+     */
+    private static final int MAX_FILE_NAME_LENGTH = 255;
+
+    private static final String ELLIPSIS = "...";
+
+    static Path createUnique(OptionValues options, OptionKey<String> baseNameOption, String id, String label, String ext, boolean createDirectory) throws IOException {
+        String timestamp = "";
+        String prefix;
+        if (id == null) {
+            prefix = baseNameOption.getValue(options);
+            int slash = prefix.lastIndexOf(File.separatorChar);
+            prefix = prefix.substring(slash + 1);
+        } else {
+            prefix = id;
+        }
+        for (;;) {
+            int fileNameLengthWithoutLabel = timestamp.length() + ext.length() + prefix.length() + "[]".length();
+            int labelLengthLimit = MAX_FILE_NAME_LENGTH - fileNameLengthWithoutLabel;
+            String fileName;
+            if (labelLengthLimit < ELLIPSIS.length()) {
+                // This means `id` is very long
+                String suffix = timestamp + ext;
+                int idLengthLimit = Math.min(MAX_FILE_NAME_LENGTH - suffix.length(), prefix.length());
+                fileName = sanitizeFileName(prefix.substring(0, idLengthLimit) + suffix);
+            } else {
+                if (label == null) {
+                    fileName = sanitizeFileName(prefix + timestamp + ext);
+                } else {
+                    String adjustedLabel = label;
+                    if (label.length() > labelLengthLimit) {
+                        adjustedLabel = label.substring(0, labelLengthLimit - ELLIPSIS.length()) + ELLIPSIS;
+                    }
+                    fileName = sanitizeFileName(prefix + '[' + adjustedLabel + ']' + timestamp + ext);
+                }
+            }
+            Path dumpDir = DebugOptions.getDumpDirectory(options);
+            Path result = Paths.get(dumpDir.toString(), fileName);
+            try {
+                if (createDirectory) {
+                    return Files.createDirectory(result);
+                } else {
+                    return Files.createFile(result);
+                }
+            } catch (FileAlreadyExistsException e) {
+                if (timestamp.length() == 0) {
+                    timestamp = "_" + getGlobalTimeStamp();
+                } else {
+                    timestamp = "_" + System.currentTimeMillis();
+                }
+            }
+        }
+    }
+
 }

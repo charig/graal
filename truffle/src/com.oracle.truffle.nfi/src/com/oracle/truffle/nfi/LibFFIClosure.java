@@ -56,13 +56,13 @@ final class LibFFIClosure implements TruffleObject {
     static LibFFIClosure create(NFIContext context, LibFFISignature signature, TruffleObject executable) {
         CompilerAsserts.neverPartOfCompilation();
         LibFFIClosure ret = new LibFFIClosure(context, signature, executable);
-        NativeAllocation.registerNativeAllocation(ret, ret.nativePointer);
+        ret.nativePointer.registerManagedRef(ret);
         return ret;
     }
 
     static LibFFIClosure newClosureWrapper(ClosureNativePointer nativePointer) {
         LibFFIClosure ret = new LibFFIClosure(nativePointer);
-        NativeAllocation.registerNativeAllocation(ret, ret.nativePointer);
+        ret.nativePointer.registerManagedRef(ret);
         return ret;
     }
 
@@ -91,7 +91,6 @@ final class LibFFIClosure implements TruffleObject {
 
     private LibFFIClosure(ClosureNativePointer nativePointer) {
         this.nativePointer = nativePointer;
-        this.nativePointer.addRef();
     }
 
     @Override

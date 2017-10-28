@@ -155,6 +155,28 @@ import com.oracle.truffle.api.source.SourceSection;
  * Language-specific entry points, for instance to emulate the command-line interface of an existing
  * implementation, should be handled externally.
  *
+ * <h4>Multi-threading</h4>
+ *
+ * There are two kinds of threads that access contexts of Truffle guest languages:
+ * <ul>
+ * <li>Internal threads are {@link Env#createThread(Runnable) created} and managed by a language for
+ * a context. All internally created threads need to be stopped when the context is
+ * {@link #disposeContext(Object) disposed}.
+ * <li>External threads are created and managed by the host application / language launcher. The
+ * host application is allowed to use language contexts from changing threads, sequentially or at
+ * the same time if the language {@link #isThreadAccessAllowed(Thread, boolean) allows} it.
+ * </ul>
+ * <p>
+ * By default every {@link #createContext(Env) context} only allows access from one thread at the
+ * same time. Therefore if the context is tried to be accessed from multiple threads at the same
+ * time the access will fail. Languages that want to allow multi-threaded access to a context may
+ * override {@link #isThreadAccessAllowed(Thread, boolean)} and return <code>true</code> also for
+ * multi-threaded accesses. Initialization actions for multi-threaded access can be performed by
+ * overriding {@link #initializeMultiThreading(Object)}. Threads are
+ * {@link #initializeThread(Object, Thread) initialized} and {@link #disposeContext(Object)
+ * disposed} before and after use with a context. Languages may {@link Env#createThread(Runnable)
+ * create} new threads if the environment {@link Env#isCreateThreadAllowed() allows} it.
+ *
  * @param <C> internal state of the language associated with every thread that is executing program
  *            {@link #parse(com.oracle.truffle.api.TruffleLanguage.ParsingRequest) parsed} by the
  *            language
@@ -179,9 +201,8 @@ public abstract class TruffleLanguage<C> {
     /**
      * The annotation to use to register your language to the
      * {@link com.oracle.truffle.api.vm.PolyglotEngine Truffle} system. By annotating your
-     * implementation of {@link TruffleLanguage} by this annotation you are just a
-     * <em>one JAR drop to
-     * the class path</em> away from your users. Once they include your JAR in their application,
+     * implementation of {@link TruffleLanguage} by this annotation you are just a <em>one JAR drop
+     * to the class path</em> away from your users. Once they include your JAR in their application,
      * your language will be available to the {@link com.oracle.truffle.api.vm.PolyglotEngine
      * Truffle virtual machine}.
      *
@@ -196,6 +217,7 @@ public abstract class TruffleLanguage<C> {
          * as group identifier for options of the language.
          *
          * @return identifier of your language
+         * @since 0.8 or earlier
          */
         String id() default "";
 
@@ -204,6 +226,7 @@ public abstract class TruffleLanguage<C> {
          * {@link com.oracle.truffle.api.vm.PolyglotEngine.Language#getName()} getter.
          *
          * @return identifier of your language
+         * @since 0.8 or earlier
          */
         String name();
 
@@ -211,6 +234,7 @@ public abstract class TruffleLanguage<C> {
          * Unique name of your language implementation.
          *
          * @return the implementation name of your language
+         * @since 0.8 or earlier
          */
         String implementationName() default "";
 
@@ -219,6 +243,7 @@ public abstract class TruffleLanguage<C> {
          * the {@link com.oracle.truffle.api.vm.PolyglotEngine.Language#getVersion()} getter.
          *
          * @return version of your language
+         * @since 0.8 or earlier
          */
         String version();
 
@@ -229,6 +254,7 @@ public abstract class TruffleLanguage<C> {
          * executing} their code snippets or their {@link Source files}.
          *
          * @return array of MIME types assigned to your language files
+         * @since 0.8 or earlier
          */
         String[] mimeType();
 
@@ -272,9 +298,10 @@ public abstract class TruffleLanguage<C> {
      * initialized and for example making
      * {@link Env#parse(com.oracle.truffle.api.source.Source, java.lang.String...) calls into other
      * languages} and assuming your language is already initialized and others can see it would be
-     * wrong - until you return from this method, the initialization isn't over. Should there be a
-     * need to perform complex initialization, do it by overriding the
-     * {@link #initializeContext(java.lang.Object)} method.
+     * wrong - until you return from this method, the initialization isn't over. The same is true
+     * for instrumentation, the instruments can not receive any meta data about code executed during
+     * context creation. Should there be a need to perform complex initialization, do it by
+     * overriding the {@link #initializeContext(java.lang.Object)} method.
      *
      * @param env the environment the language is supposed to operate in
      * @return internal data of the language in given environment
@@ -540,6 +567,75 @@ public abstract class TruffleLanguage<C> {
      */
     protected Object lookupSymbol(C context, String symbolName) {
         return null;
+    }
+
+    /**
+     * Returns <code>true</code> if code of this language is allowed to be executed on this thread.
+     * The method returns <code>false</code> to deny execution on this thread. The default
+     * implementation denies access to more than one thread at the same time. The
+     * {@link Thread#currentThread() current thread} may differ from the passed thread.
+     * <p>
+     * <b>Example multi-threaded language implementation:</b>
+     * {@link TruffleLanguageSnippets.MultiThreadedLanguage#initializeThread}
+     *
+     * @param thread the thread that accesses the context for the first time.
+     * @param singleThreaded <code>true</code> if the access is considered single-threaded,
+     *            <code>false</code> if more than one thread is active at the same time.
+     * @since 0.28
+     */
+    protected boolean isThreadAccessAllowed(Thread thread, boolean singleThreaded) {
+        return singleThreaded;
+    }
+
+    /**
+     * Invoked before the context is accessed from multiple threads at the same time. This allows
+     * languages to perform actions that are required to support multi-threading. It will never be
+     * invoked if {@link #isThreadAccessAllowed(Thread, boolean)} is implemented to deny access from
+     * multiple threads at the same time. All initialized languages must allow multi-threading for
+     * this method to be invoked.
+     * <p>
+     * <b>Example multi-threaded language implementation:</b>
+     * {@link TruffleLanguageSnippets.MultiThreadedLanguage#initializeThread}
+     *
+     * @param context the context that should be prepared for multi-threading.
+     * @since 0.28
+     */
+    protected void initializeMultiThreading(C context) {
+    }
+
+    /**
+     * Invoked before a context is accessed from a new thread. This allows the language to perform
+     * initialization actions for each thread before guest language code is executed. Also for
+     * languages that deny access from multiple threads at the same time, multiple threads may be
+     * initialized if they are used sequentially.
+     * <p>
+     * The {@link Thread#currentThread() current thread} may differ from the initialized thread.
+     * <p>
+     * <b>Example multi-threaded language implementation:</b>
+     * {@link TruffleLanguageSnippets.MultiThreadedLanguage#initializeThread}
+     *
+     * @param context the context that is entered
+     * @param thread the thread that accesses the context for the first time.
+     *
+     * @since 0.28
+     */
+    protected void initializeThread(C context, Thread thread) {
+    }
+
+    /**
+     * Invoked the last time code will be executed for this thread and context. This allows the
+     * language to perform cleanup actions for each thread and context. Threads might be disposed
+     * before after or while a context is disposed. The {@link Thread#currentThread() current
+     * thread} may differ from the disposed thread.
+     * <p>
+     *
+     * <b>Example multi-threaded language implementation:
+     * <b> {@link TruffleLanguageSnippets.MultiThreadedLanguage#initializeThread}
+     *
+     * @since 0.28
+     */
+    @SuppressWarnings("unused")
+    protected void disposeThread(C context, Thread thread) {
     }
 
     /**
@@ -823,6 +919,7 @@ public abstract class TruffleLanguage<C> {
      */
     public static final class Env {
 
+        private static final Object UNSET_CONTEXT = new Object();
         private final Object vmObject; // PolyglotEngine.Language
         private final LanguageInfo language;
         private final TruffleLanguage<Object> spi;
@@ -833,7 +930,8 @@ public abstract class TruffleLanguage<C> {
         private final OptionValues options;
         private final String[] applicationArguments;
         private List<Object> services;
-        @CompilationFinal private Object context;
+        @CompilationFinal private volatile Object context = UNSET_CONTEXT;
+        @CompilationFinal private volatile Assumption contextUnchangedAssumption = Truffle.getRuntime().createAssumption("Language context unchanged");
         @CompilationFinal private volatile boolean initialized = false;
         @CompilationFinal private volatile Assumption initializedUnchangedAssumption = Truffle.getRuntime().createAssumption("Language context initialized unchanged");
 
@@ -884,6 +982,72 @@ public abstract class TruffleLanguage<C> {
          */
         public String[] getApplicationArguments() {
             return applicationArguments;
+        }
+
+        /**
+         * Returns <code>true</code> if the creation of new threads is allowed in the current
+         * environment.
+         *
+         * @see #createThread(Runnable)
+         * @since 0.28
+         */
+        public boolean isCreateThreadAllowed() {
+            return AccessAPI.engineAccess().isCreateThreadAllowed(vmObject);
+        }
+
+        /**
+         * Creates a new thread that has access to the current language context. A thread is
+         * {@link TruffleLanguage#initializeThread(Object, Thread) initialized} when it is
+         * {@link Thread#start() started} and {@link TruffleLanguage#disposeThread(Object, Thread)
+         * disposed} as soon as the thread finished the execution. In order to start threads the
+         * language needs to {@link TruffleLanguage#isThreadAccessAllowed(Thread, boolean) allow}
+         * access from multiple threads at the same time.
+         * <p>
+         * It is recommended to set an
+         * {@link Thread#setUncaughtExceptionHandler(java.lang.Thread.UncaughtExceptionHandler)
+         * uncaught exception handler} for the created thread. For example the thread can throw an
+         * uncaught exception if one of the initialized language contexts don't support execution on
+         * this thread.
+         * <p>
+         * The language that created and started the thread is responsible to complete all running
+         * or waiting threads when the context is {@link TruffleLanguage#disposeContext(Object)
+         * disposed}.
+         *
+         * @param runnable the runnable to run on this thread.
+         * @throws IllegalStateException if thread creation is not {@link #isCreateThreadAllowed()
+         *             allowed}.
+         * @since 0.28
+         */
+        @TruffleBoundary
+        public Thread createThread(Runnable runnable) {
+            return createThread(runnable, null);
+        }
+
+        /**
+         * Creates a new thread that has access to given inner context. A thread is
+         * {@link TruffleLanguage#initializeThread(Object, Thread) initialized} when it is
+         * {@link Thread#start() started} and {@link TruffleLanguage#disposeThread(Object, Thread)
+         * disposed} as soon as the thread finished the execution.
+         * <p>
+         * It is recommended to set an
+         * {@link Thread#setUncaughtExceptionHandler(java.lang.Thread.UncaughtExceptionHandler)
+         * uncaught exception handler} for the created thread. For example the thread can throw an
+         * uncaught exception if one of the initialized language contexts don't support execution on
+         * this thread.
+         * <p>
+         * The language that created and started the thread is responsible to complete all running
+         * or waiting threads when the context is {@link TruffleLanguage#disposeContext(Object)
+         * disposed}.
+         *
+         * @param runnable the runnable to run on this thread
+         * @param context the context to enter and leave when the thread is started.
+         * @throws IllegalStateException if thread creation is not {@link #isCreateThreadAllowed()
+         *             allowed}.
+         * @since 0.28
+         */
+        @TruffleBoundary
+        public Thread createThread(Runnable runnable, @SuppressWarnings("hiding") TruffleContext context) {
+            return AccessAPI.engineAccess().createThread(vmObject, runnable, context != null ? context.impl : null);
         }
 
         /**
@@ -1043,7 +1207,7 @@ public abstract class TruffleLanguage<C> {
         public CallTarget parse(Source source, String... argumentNames) {
             CompilerAsserts.neverPartOfCompilation();
             checkDisposed();
-            return AccessAPI.engineAccess().getEnvForLanguage(vmObject, source.getMimeType()).spi.parse(source, null, null, argumentNames);
+            return AccessAPI.engineAccess().getEnvForLanguage(vmObject, source.getLanguage(), source.getMimeType()).spi.parse(source, null, null, argumentNames);
         }
 
         /**
@@ -1199,21 +1363,41 @@ public abstract class TruffleLanguage<C> {
         }
 
         Object findExportedSymbol(String globalName, boolean onlyExplicit) {
-            return spi.findExportedSymbol(context, globalName, onlyExplicit);
+            Object c = getContext();
+            if (c != UNSET_CONTEXT) {
+                return spi.findExportedSymbol(c, globalName, onlyExplicit);
+            } else {
+                return null;
+            }
         }
 
         Object getLanguageGlobal() {
-            return spi.getLanguageGlobal(context);
+            Object c = getContext();
+            if (c != UNSET_CONTEXT) {
+                return spi.getLanguageGlobal(c);
+            } else {
+                return null;
+            }
         }
 
         Object findMetaObject(Object obj) {
-            final Object rawValue = AccessAPI.engineAccess().findOriginalObject(obj);
-            return spi.findMetaObject(context, rawValue);
+            Object c = getContext();
+            if (c != UNSET_CONTEXT) {
+                final Object rawValue = AccessAPI.engineAccess().findOriginalObject(obj);
+                return spi.findMetaObject(c, rawValue);
+            } else {
+                return null;
+            }
         }
 
         SourceSection findSourceLocation(Object obj) {
-            final Object rawValue = AccessAPI.engineAccess().findOriginalObject(obj);
-            return spi.findSourceLocation(context, rawValue);
+            Object c = getContext();
+            if (c != UNSET_CONTEXT) {
+                final Object rawValue = AccessAPI.engineAccess().findOriginalObject(obj);
+                return spi.findSourceLocation(c, rawValue);
+            } else {
+                return null;
+            }
         }
 
         boolean isObjectOfLanguage(Object obj) {
@@ -1222,7 +1406,12 @@ public abstract class TruffleLanguage<C> {
         }
 
         void dispose() {
-            spi.disposeContext(context);
+            Object c = getContext();
+            if (c != UNSET_CONTEXT) {
+                spi.disposeContext(c);
+            } else {
+                throw new IllegalStateException("Disposing while context has not been set yet.");
+            }
         }
 
         void postInit() {
@@ -1250,12 +1439,26 @@ public abstract class TruffleLanguage<C> {
         }
 
         String toStringIfVisible(Object value, boolean checkVisibility) {
-            if (checkVisibility) {
-                if (!spi.isVisible(context, value)) {
-                    return null;
+            Object c = getContext();
+            if (c != UNSET_CONTEXT) {
+                if (checkVisibility) {
+                    if (!spi.isVisible(c, value)) {
+                        return null;
+                    }
                 }
+                return spi.toString(c, value);
+            } else {
+                return null;
             }
-            return spi.toString(context, value);
+        }
+
+        private Object getContext() {
+            if (contextUnchangedAssumption.isValid()) {
+                return context;
+            } else {
+                CompilerDirectives.transferToInterpreterAndInvalidate();
+                return context;
+            }
         }
 
     }
@@ -1344,12 +1547,21 @@ public abstract class TruffleLanguage<C> {
 
         @Override
         public Object lookupSymbol(Env env, String globalName) {
-            return env.spi.lookupSymbol(env.context, globalName);
+            if (env.context != Env.UNSET_CONTEXT) {
+                return env.spi.lookupSymbol(env.context, globalName);
+            } else {
+                return null;
+            }
         }
 
         @Override
         public Object getContext(Env env) {
-            return env.context;
+            Object c = env.getContext();
+            if (c != Env.UNSET_CONTEXT) {
+                return c;
+            } else {
+                return null;
+            }
         }
 
         @Override
@@ -1364,8 +1576,17 @@ public abstract class TruffleLanguage<C> {
             LinkedHashSet<Object> collectedServices = new LinkedHashSet<>();
             AccessAPI.instrumentAccess().collectEnvServices(collectedServices, API.nodes().getEngineObject(language), language);
             env.services = new ArrayList<>(collectedServices);
-            env.context = env.getSpi().createContext(env);
             return env;
+        }
+
+        @Override
+        public Object createEnvContext(Env env) {
+            Object context = env.getSpi().createContext(env);
+            env.context = context;
+            Assumption contextUnchanged = env.contextUnchangedAssumption;
+            env.contextUnchangedAssumption = Truffle.getRuntime().createAssumption("Language context unchanged");
+            contextUnchanged.invalidate();
+            return context;
         }
 
         @Override
@@ -1391,6 +1612,26 @@ public abstract class TruffleLanguage<C> {
         @Override
         public void onThrowable(RootNode root, Throwable e) {
             TruffleStackTrace.fillIn(e);
+        }
+
+        @Override
+        public void initializeThread(Env env, Thread current) {
+            env.getSpi().initializeThread(env.context, current);
+        }
+
+        @Override
+        public boolean isThreadAccessAllowed(LanguageInfo language, Thread thread, boolean singleThread) {
+            return AccessAPI.nodesAccess().getLanguageSpi(language).isThreadAccessAllowed(thread, singleThread);
+        }
+
+        @Override
+        public void initializeMultiThreading(Env env) {
+            env.getSpi().initializeMultiThreading(env.context);
+        }
+
+        @Override
+        public void disposeThread(Env env, Thread current) {
+            env.getSpi().disposeThread(env.context, current);
         }
 
         @Override
@@ -1626,6 +1867,9 @@ class TruffleLanguageSnippets {
         Context fork() {
             return null;
         }
+
+        final Assumption singleThreaded = Truffle.getRuntime().createAssumption();
+
     }
 
     // @formatter:off
@@ -1674,5 +1918,42 @@ class TruffleLanguageSnippets {
         assert 10 == ten.intValue();
     }
     // END: TruffleLanguageSnippets#parseWithParams
+
+
+    abstract
+    // BEGIN: TruffleLanguageSnippets.MultiThreadedLanguage#initializeThread
+    class MultiThreadedLanguage extends TruffleLanguage<Context> {
+
+        @Override
+        protected Context createContext(Env env) {
+            return new Context(env);
+        }
+
+        @Override
+        protected boolean isThreadAccessAllowed(Thread thread,
+                        boolean singleThreaded) {
+            // allow access from any thread instead of just one
+            return true;
+        }
+
+        @Override
+        protected void initializeMultiThreading(Context context) {
+            // perform actions when the context is switched to multi-threading
+            context.singleThreaded.invalidate();
+        }
+
+        @Override
+        protected void initializeThread(Context context, Thread thread) {
+            // perform initialization actions for threads
+        }
+
+        @Override
+        protected void disposeThread(Context context, Thread thread) {
+            // perform disposal actions for threads
+        }
+    }
+    // END: TruffleLanguageSnippets.MultiThreadedLanguage#initializeThread
+
+
 
 }

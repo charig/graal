@@ -25,10 +25,12 @@
 # ----------------------------------------------------------------------------------------------------
 
 import os
-from os.path import join, exists, getmtime
+from os.path import join, exists, getmtime, basename, isdir
 from argparse import ArgumentParser, RawDescriptionHelpFormatter
 import re
+import stat
 import zipfile
+import tarfile
 import subprocess
 import tempfile
 import shutil
@@ -394,6 +396,7 @@ class GraalTags:
     test = ['test', 'fulltest']
     benchmarktest = ['benchmarktest', 'fulltest']
     ctw = ['ctw', 'fulltest']
+    doc = ['javadoc']
 
 def _remove_empty_entries(a):
     """Removes empty entries. Return value is always a list."""
@@ -464,6 +467,17 @@ def compiler_gate_runner(suites, unit_test_runs, bootstrap_tests, tasks, extraVM
     for r in unit_test_runs:
         r.run(suites, tasks, ['-XX:-UseJVMCICompiler'] + _remove_empty_entries(extraVMarguments))
 
+    # Ensure makegraaljdk works
+    with Task('MakeGraalJDK', tasks, tags=GraalTags.test) as t:
+        if t and isJDK8:
+            try:
+                makegraaljdk(['-a', 'graaljdk.tar', 'graaljdk'])
+            finally:
+                if exists('graaljdk'):
+                    shutil.rmtree('graaljdk')
+                if exists('graaljdk.tar'):
+                    os.unlink('graaljdk.tar')
+
     # Run ctw against rt.jar on hosted
     with Task('CTW:hosted', tasks, tags=GraalTags.ctw) as t:
         if t:
@@ -523,6 +537,9 @@ def compiler_gate_runner(suites, unit_test_runs, bootstrap_tests, tasks, extraVM
     # ensure -Xcomp still works
     with Task('XCompMode:product', tasks, tags=GraalTags.test) as t:
         if t: run_vm(_remove_empty_entries(extraVMarguments) + ['-XX:+UseJVMCICompiler', '-Xcomp', '-version'])
+
+    with Task('Javadoc', tasks, tags=GraalTags.doc) as t:
+        if t: mx.javadoc([])
 
 graal_unit_test_runs = [
     UnitTestRun('UnitTests', [], tags=GraalTags.test),
@@ -692,7 +709,7 @@ def _parseVmArgs(args, addDefaultArgs=True):
 
     if '-version' in args:
         ignoredArgs = args[args.index('-version') + 1:]
-        if  len(ignoredArgs) > 0:
+        if len(ignoredArgs) > 0:
             mx.log("Warning: The following options will be ignored by the VM because they come after the '-version' argument: " + ' '.join(ignoredArgs))
 
     return jdk.processArgs(argsPrefix + args, addDefaultArgs=addDefaultArgs)
@@ -718,12 +735,12 @@ class StdoutUnstripping:
     for the execution were not already being redirected and existing *.map files
     were detected in the arguments to the execution.
     """
-    def __init__(self, args, out, err):
+    def __init__(self, args, out, err, mapFiles=None):
         self.args = args
         self.out = out
         self.err = err
         self.capture = None
-        self.mapFiles = None
+        self.mapFiles = mapFiles
 
     def __enter__(self):
         if mx.get_opts().strip_jars and self.out is None and (self.err is None or self.err == subprocess.STDOUT):
@@ -849,7 +866,7 @@ def java_base_unittest(args):
     if not exists(jlink):
         raise mx.JDKConfigException('jlink tool does not exist: ' + jlink)
     basejdk_dir = join(_suite.get_output_root(), 'jdkbase')
-    basemodules = 'java.base,jdk.internal.vm.ci,jdk.unsupported,java.management,jdk.management'
+    basemodules = 'java.base,jdk.internal.vm.ci,jdk.unsupported'
     if exists(basejdk_dir):
         shutil.rmtree(basejdk_dir)
     mx.run([jlink, '--output', basejdk_dir, '--add-modules', basemodules, '--module-path', join(jdk.home, 'jmods')])
@@ -880,6 +897,133 @@ def microbench(*args):
     mx.abort("`mx microbench` is deprecated.\n" +
              "Use `mx benchmark jmh-whitebox:*` and `mx benchmark jmh-dist:*` instead!")
 
+def javadoc(args):
+    mx.javadoc(args)
+
+def create_archive(srcdir, arcpath, prefix):
+    """
+    Creates a compressed archive of a given directory.
+
+    :param str srcdir: directory to archive
+    :param str arcpath: path of file to contain the archive. The extension of `path`
+           specifies the type of archive to create
+    :param str prefix: the prefix to apply to each entry in the archive
+    """
+
+    def _taradd(arc, filename, arcname):
+        arc.add(name=f, arcname=arcname, recursive=False)
+    def _zipadd(arc, filename, arcname):
+        arc.write(filename, arcname)
+
+    if arcpath.endswith('.zip'):
+        arc = zipfile.ZipFile(arcpath, 'w', zipfile.ZIP_DEFLATED)
+        add = _zipadd
+    elif arcpath.endswith('.tar'):
+        arc = tarfile.open(arcpath, 'w')
+        add = _taradd
+    elif arcpath.endswith('.tgz') or arcpath.endswith('.tar.gz'):
+        arc = tarfile.open(arcpath, 'w:gz')
+        add = _taradd
+    else:
+        mx.abort('unsupported archive kind: ' + arcpath)
+
+    for root, _, filenames in os.walk(srcdir):
+        for name in filenames:
+            f = join(root, name)
+            # Make sure files in the image are readable by everyone
+            file_mode = os.stat(f).st_mode
+            mode = stat.S_IRGRP | stat.S_IROTH | file_mode
+            if isdir(f) or (file_mode & stat.S_IXUSR):
+                mode = mode | stat.S_IXGRP | stat.S_IXOTH
+            os.chmod(f, mode)
+            arcname = prefix + os.path.relpath(f, srcdir)
+            add(arc, f, arcname)
+    arc.close()
+
+def makegraaljdk(args):
+    """make a JDK with Graal as the default top level JIT"""
+    parser = ArgumentParser(prog='mx makegraaljdk')
+    parser.add_argument('-f', '--force', action='store_true', help='overwrite existing GraalJDK')
+    parser.add_argument('-a', '--archive', action='store', help='name of archive to create', metavar='<path>')
+    parser.add_argument('dest', help='destination directory for GraalJDK', metavar='<path>')
+    args = parser.parse_args(args)
+    if isJDK8:
+        dstJdk = os.path.abspath(args.dest)
+        srcJdk = jdk.home
+        if exists(dstJdk):
+            if args.force:
+                shutil.rmtree(dstJdk)
+            else:
+                mx.abort('Use --force to overwrite existing directory ' + dstJdk)
+        mx.log('Creating {} from {}'.format(dstJdk, srcJdk))
+        shutil.copytree(srcJdk, dstJdk)
+
+        bootDir = mx.ensure_dir_exists(join(dstJdk, 'jre', 'lib', 'boot'))
+        jvmciDir = join(dstJdk, 'jre', 'lib', 'jvmci')
+        assert exists(jvmciDir), jvmciDir + ' does not exist'
+
+        if mx.get_os() == 'darwin' or mx.get_os() == 'windows':
+            jvmlibDir = join(dstJdk, 'jre', 'lib', 'server')
+        else:
+            jvmlibDir = join(dstJdk, 'jre', 'lib', mx.get_arch(), 'server')
+        jvmlib = join(jvmlibDir, mx.add_lib_prefix(mx.add_lib_suffix('jvm')))
+        assert exists(jvmlib), jvmlib + ' does not exist'
+
+        with open(join(jvmciDir, 'compiler-name'), 'w') as fp:
+            print >> fp, 'graal'
+        vmName = 'Graal'
+        mapFiles = set()
+        for e in _jvmci_classpath:
+            src = basename(e.get_path())
+            mx.log('Copying {} to {}'.format(e.get_path(), jvmciDir))
+            candidate = e.get_path() + '.map'
+            if exists(candidate):
+                mapFiles.add(candidate)
+            with open(join(dstJdk, 'release'), 'a') as fp:
+                d = e.dist()
+                s = d.suite
+                print >> fp, '{}={}'.format(d.name, s.vc.parent(s.dir))
+                vmName = vmName + ':' + s.name + '_' + s.version()
+            shutil.copyfile(e.get_path(), join(jvmciDir, src))
+        for e in _bootclasspath_appends:
+            src = basename(e.classpath_repr())
+            mx.log('Copying {} to {}'.format(e.classpath_repr(), bootDir))
+            candidate = e.classpath_repr() + '.map'
+            if exists(candidate):
+                mapFiles.add(candidate)
+
+            with open(join(dstJdk, 'release'), 'a') as fp:
+                s = e.suite
+                print >> fp, '{}={}'.format(e.name, s.vc.parent(s.dir))
+            shutil.copyfile(e.classpath_repr(), join(bootDir, src))
+
+        out = mx.LinesOutputCapture()
+        mx.run([jdk.java, '-version'], err=out)
+        line = None
+        pattern = re.compile(r'(.* )(?:Server|Graal) VM \(build.*')
+        for line in out.lines:
+            m = pattern.match(line)
+            if m:
+                with open(join(jvmlibDir, 'vm.properties'), 'w') as fp:
+                    # Modify VM name in `java -version` to be Graal along
+                    # with a suffix denoting the commit of each Graal jar.
+                    # For example:
+                    # Java HotSpot(TM) 64-Bit Graal:compiler_88847fb25d1a62977a178331a5e78fa5f8fcbb1a (build 25.71-b01-internal-jvmci-0.34, mixed mode)
+                    print >> fp, 'name=' + m.group(1) + vmName
+                line = True
+                break
+        if line is not True:
+            mx.abort('Could not find "{}" in output of `java -version`:\n{}'.format(pattern.pattern, os.linesep.join(out.lines)))
+
+        exe = join(dstJdk, 'bin', mx.exe_suffix('java'))
+        with StdoutUnstripping(args=[], out=None, err=None, mapFiles=mapFiles) as u:
+            mx.run([exe, '-XX:+BootstrapJVMCI', '-version'], out=u.out, err=u.err)
+        if args.archive:
+            mx.log('Archiving {}'.format(args.archive))
+            create_archive(dstJdk, args.archive, basename(args.dest) + '/')
+    else:
+        mx.abort('Can only make GraalJDK for JDK 8 currently')
+
 mx.update_commands(_suite, {
     'sl' : [sl, '[SL args|@VM options]'],
     'vm': [run_vm, '[-options] class [args...]'],
@@ -888,6 +1032,8 @@ mx.update_commands(_suite, {
     'verify_jvmci_ci_versions': [verify_jvmci_ci_versions, ''],
     'java_base_unittest' : [java_base_unittest, 'Runs unittest on JDK9 java.base "only" module(s)'],
     'microbench': [microbench, ''],
+    'javadoc': [javadoc, ''],
+    'makegraaljdk': [makegraaljdk, '[options]'],
 })
 
 def mx_post_parse_cmd_line(opts):
