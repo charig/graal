@@ -150,9 +150,9 @@ public final class InstrumentationHandler {
         assert globalHandler != null : "InstrumentationHandler not yet initialized";
 
         Node node;
-        if (instrumentableNode instanceof WrapperNode) {
-            node = ((WrapperNode) instrumentableNode).getDelegateNode();
-            invalidateWrapperImpl((WrapperNode) instrumentableNode, node);
+        if (instrumentableNode instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) {
+            node = ((com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) instrumentableNode).getDelegateNode();
+            invalidateWrapperImpl((com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) instrumentableNode, node);
         } else {
             node = instrumentableNode;
             globalHandler.insertWrapper(node, sourceSection);
@@ -831,7 +831,8 @@ public final class InstrumentationHandler {
     }
 
     private void insertWrapper(Node instrumentableNode, SourceSection sourceSection) {
-        Lock lock = AccessorInstrumentHandler.nodesAccess().getLock(instrumentableNode);
+      assert !(instrumentableNode instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode);
+      Lock lock = AccessorInstrumentHandler.nodesAccess().getLock(instrumentableNode);
         try {
             lock.lock();
             insertWrapperImpl(instrumentableNode, sourceSection);
@@ -844,7 +845,6 @@ public final class InstrumentationHandler {
     private void insertWrapperImpl(Node originalNode, SourceSection sourceSection) {
         Node node = originalNode;
         Node parent = node.getParent();
-        assert !(instrumentableNode instanceof WrapperNode);
         if (parent instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) {
             // already wrapped, need to invalidate the wrapper something changed
             invalidateWrapperImpl((com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) parent, node);

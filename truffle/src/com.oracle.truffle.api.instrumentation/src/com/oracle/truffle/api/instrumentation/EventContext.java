@@ -333,7 +333,7 @@ public final class EventContext {
     public ExecutionEventNode findDirectParentEventNode(final ExecutionEventNodeFactory factory) {
         Node parent = getInstrumentedNode().getParent();
 
-        assert parent instanceof WrapperNode;  // this is the wrapper of the current node
+        assert parent instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode;  // this is the wrapper of the current node
         parent = parent.getParent();           // this is the parent node
         parent = parent.getParent();           // this is the wrapper of the parent node
         return findEventNode(factory, parent);
@@ -370,8 +370,8 @@ public final class EventContext {
     }
 
     private static ExecutionEventNode findEventNode(ExecutionEventNodeFactory factory, Node node) {
-        if (node instanceof WrapperNode) {
-            return ((WrapperNode) node).getProbeNode().findEventNode(factory);
+        if (node instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) {
+            return ((com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) node).getProbeNode().findEventNode(factory);
         }
         return null;
     }
