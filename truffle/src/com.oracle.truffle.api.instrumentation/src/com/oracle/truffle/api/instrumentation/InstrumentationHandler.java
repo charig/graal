@@ -73,10 +73,12 @@ import com.oracle.truffle.api.source.SourceSection;
  * Central coordinator class for the Truffle instrumentation framework. Allocated once per
  * {@linkplain org.graalvm.polyglot.Engine engine}.
  */
-final class InstrumentationHandler {
+public final class InstrumentationHandler {
 
     /* Enable trace output to stdout. */
     static final boolean TRACE = Boolean.getBoolean("truffle.instrumentation.trace");
+    
+    private static InstrumentationHandler globalHandler;
 
     private final Object sourceVM;
 
@@ -136,6 +138,24 @@ final class InstrumentationHandler {
         this.err = err;
         this.in = in;
         this.engineInstrumenter = new EngineInstrumenter();
+        globalHandler = this;
+    }
+
+    public static void insertInstrumentationWrapper(Node instrumentableNode) {
+        insertInstrumentationWrapper(instrumentableNode, instrumentableNode.getSourceSection());
+    }
+
+    public static void insertInstrumentationWrapper(Node instrumentableNode, SourceSection sourceSection) {
+        assert globalHandler != null : "InstrumentationHandler not yet initialized";
+
+        Node node;
+        if (instrumentableNode instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) {
+            node = ((com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) instrumentableNode).getDelegateNode();
+            invalidateWrapperImpl((com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) instrumentableNode, node);
+        } else {
+            node = instrumentableNode;
+            globalHandler.insertWrapper(node, sourceSection);
+        }
     }
 
     Object getSourceVM() {
@@ -844,6 +864,7 @@ final class InstrumentationHandler {
     @SuppressWarnings({"unchecked", "deprecation"})
     private void insertWrapperImpl(Node node, SourceSection sourceSection) {
         Node parent = node.getParent();
+        assert !(node instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode);
         if (parent instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) {
             // already wrapped, need to invalidate the wrapper something changed
             invalidateWrapperImpl((com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) parent, node);
@@ -1467,6 +1488,11 @@ final class InstrumentationHandler {
         }
 
         @Override
+        public boolean isTaggedWith(Node node, Class<?> tag) {
+            return AccessorInstrumentHandler.nodesAccess().isTaggedWith(node, tag);
+        }
+
+        @Override
         void verifyFilter(SourceSectionFilter filter) {
         }
 
@@ -1611,6 +1637,10 @@ final class InstrumentationHandler {
             throw new UnsupportedOperationException("Not supported in engine instrumenter.");
         }
 
+        @Override
+        public boolean isTaggedWith(Node node, Class<?> tag) {
+            return AccessorInstrumentHandler.nodesAccess().isTaggedWith(node, tag);
+        }
     }
 
     /**
@@ -1651,6 +1681,11 @@ final class InstrumentationHandler {
         @Override
         public Set<Class<?>> queryTags(Node node) {
             return queryTagsImpl(node, languageInfo);
+        }
+        
+        @Override
+        public boolean isTaggedWith(Node node, Class<?> tag) {
+            return AccessorInstrumentHandler.nodesAccess().isTaggedWith(node, tag);
         }
 
         @Override

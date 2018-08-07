@@ -327,6 +327,24 @@ public final class ProbeNode extends Node {
         }
     }
 
+    ExecutionEventNode findEventNode(final ExecutionEventNodeFactory factory) {
+        if (version != null && version.isValid() && chain != null) {
+            return findEventNodeInChain(factory);
+        }
+        return null;
+    }
+
+    private ExecutionEventNode findEventNodeInChain(ExecutionEventNodeFactory factory) {
+        EventChainNode currentChain = this.chain;
+        while (currentChain != null) {
+            if (currentChain.binding.getElement() == factory) {
+                return ((EventProviderChainNode) currentChain).eventNode;
+            }
+            currentChain = currentChain.next;
+        }
+        return null;
+    }
+
     EventChainNode lazyUpdate(VirtualFrame frame) {
         Assumption localVersion = this.version;
         if (localVersion == null || !localVersion.isValid()) {
