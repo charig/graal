@@ -310,8 +310,8 @@ public final class InstrumentationHandler {
             trace("Initialize instrument class %s %n", instrumentClass);
         }
         try {
-            env.instrumenter.instrument = (TruffleInstrument) instrumentClass.newInstance();
-        } catch (InstantiationException | IllegalAccessException e) {
+            env.instrumenter.instrument = (TruffleInstrument) instrumentClass.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
             failInstrumentInitialization(env, String.format("Failed to create new instrumenter class %s", instrumentClass.getName()), e);
             return;
         }
@@ -901,7 +901,7 @@ public final class InstrumentationHandler {
                 if (TRACE) {
                     trace("Insert wrapper for %s, section %s%n", node, sourceSection);
                 }
-                wrapper = ((InstrumentableFactory<Node>) factory.newInstance()).createWrapper(node, probe);
+                wrapper = ((InstrumentableFactory<Node>) factory.getDeclaredConstructor().newInstance()).createWrapper(node, probe);
             }
 
         } catch (Exception e) {
