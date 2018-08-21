@@ -1,12 +1,24 @@
 gateCmdSuffix : ["-v", "--kill-with-sigquit", "gate", "--strict-mode", "--extra-vm-argument=-Dgraal.DumpOnError=true -Dgraal.PrintGraphFile=true", "--extra-vm-argument=${EXTRA_VM_ARGS}", "--tags"]
 gateCmd : ["mx", "--strict-compliance"] ${gateCmdSuffix}
 
+graalWeekly: ${graal-weekly-notifications} {
+  targets: ["weekly"]
+}
 gateTest : {
   environment : {
     EXTRA_VM_ARGS : ""
   }
   run : [
     ${gateCmd} ["build,test"]
+  ]
+}
+
+gateJavaBaseTest : {
+  environment : {
+    EXTRA_VM_ARGS : ""
+  }
+  run : [
+    ${gateCmd} ["build,javabasetest"]
   ]
 }
 
@@ -96,6 +108,13 @@ gateSolarisSPARC : ${solaris-sparcv9} ${gateCommon}
 
 gateLinuxSPARC : ${linux-sparcv9} ${gateCommon}
 
+gateLinuxAArch64 : ${linux-aarch64} ${gateCommon} {
+  downloads : {
+    JAVA_HOME : ${jdks.oraclejdkSNAPSHOT}
+    EXTRA_JAVA_HOMES : {pathlist :[ ${jdks.labsjdk8} ]}
+  }
+}
+
 gateLinuxAMD64TraceRA : ${gateLinuxAMD64} {
   environment : {
     EXTRA_VM_ARGS : "-Dgraal.TraceRA=true"
@@ -112,6 +131,15 @@ gateLinuxAMD64TraceRASingleBlock : ${gateLinuxAMD64} {
   environment : {
     EXTRA_VM_ARGS : "-Dgraal.TraceRA=true -Dgraal.TraceRAPolicy=BottomUpOnly -Dgraal.TraceBuilding=SingleBlock"
   }
+}
+
+gateJAOTC : {
+  environment : {
+    EXTRA_VM_ARGS : ""
+  }
+  run : [
+    ${gateCmd} ["build,jaotc"]
+  ]
 }
 
 gateLinuxAMD64Bootstrap : ${gateLinuxAMD64} { capabilities : ${gateLinuxAMD64.capabilities} [manycores] }

@@ -1,10 +1,12 @@
 /*
- * Copyright (c) 2013, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -24,6 +26,10 @@ package com.oracle.svm.hosted.image;
 
 import static com.oracle.svm.core.util.VMError.shouldNotReachHere;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintWriter;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
@@ -31,6 +37,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -38,11 +45,17 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.graalvm.collections.Pair;
 import org.graalvm.compiler.code.CompilationResult;
+import org.graalvm.compiler.core.common.CompressEncoding;
+import org.graalvm.compiler.core.common.NumUtil;
 import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.Indent;
+import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 
+import com.oracle.graal.pointsto.meta.AnalysisMethod;
+import com.oracle.graal.pointsto.meta.AnalysisType;
 import com.oracle.objectfile.BasicProgbitsSectionImpl;
 import com.oracle.objectfile.BuildDependency;
 import com.oracle.objectfile.LayoutDecision;
@@ -54,30 +67,40 @@ import com.oracle.objectfile.ObjectFile.RelocationKind;
 import com.oracle.objectfile.ObjectFile.Section;
 import com.oracle.objectfile.SectionName;
 import com.oracle.objectfile.macho.MachOObjectFile;
+import com.oracle.svm.core.Isolates;
 import com.oracle.svm.core.SubstrateOptions;
+import com.oracle.svm.core.amd64.FrameAccess;
+import com.oracle.svm.core.c.CConst;
 import com.oracle.svm.core.c.CGlobalDataImpl;
-import com.oracle.svm.core.c.NativeImageHeaderPreamble;
+import com.oracle.svm.core.c.CHeader;
+import com.oracle.svm.core.c.CHeader.Header;
+import com.oracle.svm.core.c.CUnsigned;
 import com.oracle.svm.core.c.function.CEntryPointOptions.Publish;
+import com.oracle.svm.core.c.function.GraalIsolateHeader;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.graal.code.CGlobalDataInfo;
 import com.oracle.svm.core.graal.code.CGlobalDataReference;
-import com.oracle.svm.core.graal.posix.PosixIsolates;
+import com.oracle.svm.core.meta.SubstrateObjectConstant;
+import com.oracle.svm.core.util.UserError;
+import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.NativeImageOptions;
-import com.oracle.svm.hosted.NativeImageOptions.CStandards;
 import com.oracle.svm.hosted.c.CGlobalDataFeature;
 import com.oracle.svm.hosted.c.NativeLibraries;
 import com.oracle.svm.hosted.c.codegen.CSourceCodeWriter;
+import com.oracle.svm.hosted.c.codegen.QueryCodeWriter;
 import com.oracle.svm.hosted.code.CEntryPointCallStubMethod;
 import com.oracle.svm.hosted.code.CEntryPointCallStubSupport;
 import com.oracle.svm.hosted.code.CEntryPointData;
 import com.oracle.svm.hosted.image.NativeImageHeap.HeapPartition;
+import com.oracle.svm.hosted.image.NativeImageHeap.ObjectInfo;
+import com.oracle.svm.hosted.image.RelocatableBuffer.Info;
 import com.oracle.svm.hosted.meta.HostedMetaAccess;
 import com.oracle.svm.hosted.meta.HostedMethod;
 import com.oracle.svm.hosted.meta.HostedUniverse;
 import com.oracle.svm.hosted.meta.MethodPointer;
 
+import jdk.vm.ci.code.site.ConstantReference;
 import jdk.vm.ci.code.site.DataSectionReference;
-import jdk.vm.ci.meta.JavaKind;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
 import jdk.vm.ci.meta.ResolvedJavaMethod.Parameter;
 import jdk.vm.ci.meta.ResolvedJavaType;
@@ -111,36 +134,118 @@ public abstract class NativeBootImage extends AbstractBootImage {
         }
     }
 
-    void writeHeaderFile(Path outFile, String imageName, boolean dynamic) {
-        List<HostedMethod> methodsWithHeader = uniqueEntryPoints.stream().filter(this::shouldWriteHeader).collect(Collectors.toList());
-        methodsWithHeader.sort(NativeBootImage::sortMethodsByFileNameAndPosition);
+    void writeHeaderFiles(Path outputDir, String imageName, boolean dynamic) {
+        /* Group methods by header files. */
+        Map<? extends Class<? extends Header>, List<HostedMethod>> hostedMethods = uniqueEntryPoints.stream()
+                        .filter(this::shouldWriteHeader)
+                        .map(m -> Pair.create(cHeader(m), m))
+                        .collect(Collectors.groupingBy(Pair::getLeft, Collectors.mapping(Pair::getRight, Collectors.toList())));
 
-        if (methodsWithHeader.size() > 0) {
-            CSourceCodeWriter writer = new CSourceCodeWriter(outFile.getParent());
-            String imageHeaderGuard = "__" + imageName.toUpperCase().replaceAll("[^A-Z0-9]", "_") + "_H";
+        hostedMethods.forEach((headerClass, methods) -> {
+            methods.sort(NativeBootImage::sortMethodsByFileNameAndPosition);
+            Header header = headerClass == Header.class ? defaultCHeaderAnnotation(imageName) : instantiateCHeader(headerClass);
+            writeHeaderFile(outputDir, header, methods, dynamic);
+        });
+    }
 
-            writer.appendln("#ifndef " + imageHeaderGuard);
-            writer.appendln("#define " + imageHeaderGuard);
+    private void writeHeaderFile(Path outDir, CHeader.Header header, List<HostedMethod> methods, boolean dynamic) {
+        CSourceCodeWriter writer = new CSourceCodeWriter(outDir.getParent());
+        String imageHeaderGuard = "__" + header.name().toUpperCase().replaceAll("[^A-Z0-9]", "_") + "_H";
+        String dynamicSuffix = dynamic ? "_dynamic.h" : ".h";
 
-            NativeImageHeaderPreamble.read().forEach(writer::appendln);
+        writer.appendln("#ifndef " + imageHeaderGuard);
+        writer.appendln("#define " + imageHeaderGuard);
 
-            if (NativeImageOptions.getCStandard() != CStandards.C89) {
-                writer.appendln("#include <stdbool.h>");
-            }
+        writer.appendln();
 
+        QueryCodeWriter.writeCStandardHeaders(writer);
+
+        List<String> dependencies = header.dependsOn().stream()
+                        .map(NativeBootImage::instantiateCHeader)
+                        .map(depHeader -> "<" + depHeader.name() + dynamicSuffix + ">").collect(Collectors.toList());
+        writer.includeFiles(dependencies);
+
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PrintWriter printWriter = new PrintWriter(baos);
+        header.writePreamble(printWriter);
+        printWriter.flush();
+        for (String line : baos.toString().split("\\r?\\n")) {
+            writer.appendln(line);
+        }
+
+        if (methods.size() > 0) {
+            writer.appendln();
             writer.appendln("#if defined(__cplusplus)");
             writer.appendln("extern \"C\" {");
             writer.appendln("#endif");
+            writer.appendln();
 
-            methodsWithHeader.forEach(m -> writeMethodHeader(m, writer, dynamic));
+            methods.forEach(m -> writeMethodHeader(m, writer, dynamic));
 
             writer.appendln("#if defined(__cplusplus)");
             writer.appendln("}");
             writer.appendln("#endif");
-
-            writer.appendln("#endif");
-            writer.writeFile(outFile.getFileName().toString(), false);
         }
+
+        writer.appendln("#endif");
+
+        String fileName = outDir.getFileName().resolve(header.name() + dynamicSuffix).toString();
+        writer.writeFile(fileName, false);
+    }
+
+    /**
+     * Looks up the corresponding {@link CHeader} annotation for the {@link HostedMethod}. Returns
+     * {@code null} if no annotation was found.
+     */
+    private static Class<? extends CHeader.Header> cHeader(HostedMethod entryPointStub) {
+        /* check if method is annotated */
+        AnalysisMethod entryPoint = CEntryPointCallStubSupport.singleton().getMethodForStub((CEntryPointCallStubMethod) entryPointStub.wrapped.wrapped);
+        CHeader methodAnnotation = entryPoint.getDeclaredAnnotation(CHeader.class);
+        if (methodAnnotation != null) {
+            return methodAnnotation.value();
+        }
+
+        /* check if enclosing classes are annotated */
+        AnalysisType enclosingType = entryPoint.getDeclaringClass();
+        while (enclosingType != null) {
+            CHeader enclosing = enclosingType.getDeclaredAnnotation(CHeader.class);
+            if (enclosing != null) {
+                return enclosing.value();
+            }
+            enclosingType = enclosingType.getEnclosingType();
+        }
+
+        return CHeader.Header.class;
+    }
+
+    private static Header instantiateCHeader(Class<? extends CHeader.Header> header) {
+        try {
+            Constructor<?> constructor = header.getDeclaredConstructor();
+            constructor.setAccessible(true);
+            return (CHeader.Header) constructor.newInstance();
+        } catch (NoSuchMethodException e) {
+            throw UserError.abort("CHeader " + header.getName() + " can't be instantiated. Please make sure that it has a nullary constructor.");
+        } catch (InstantiationException e) {
+            throw UserError.abort("CHeader " + header.getName() + " can't be instantiated. Make sure that " + header.getSimpleName() + " is not abstract.");
+        } catch (IllegalAccessException e) {
+            throw VMError.shouldNotReachHere("We set the constructor to accessible.");
+        } catch (InvocationTargetException e) {
+            throw UserError.abort("CHeader " + header.getName() + " can't be instantiated. The constructor threw and exception: " + e.getTargetException().getMessage());
+        }
+    }
+
+    private static CHeader.Header defaultCHeaderAnnotation(String defaultHeaderName) {
+        return new CHeader.Header() {
+            @Override
+            public String name() {
+                return defaultHeaderName;
+            }
+
+            @Override
+            public List<Class<? extends Header>> dependsOn() {
+                return Collections.singletonList(GraalIsolateHeader.class);
+            }
+        };
     }
 
     private static int sortMethodsByFileNameAndPosition(HostedMethod stub1, HostedMethod stub2) {
@@ -150,9 +255,10 @@ public abstract class NativeBootImage extends AbstractBootImage {
         int fileComparison = rm1.getDeclaringClass().getSourceFileName().compareTo(rm2.getDeclaringClass().getSourceFileName());
         if (fileComparison != 0) {
             return fileComparison;
-        } else {
+        } else if (rm1.getLineNumberTable() != null && rm2.getLineNumberTable() != null) {
             return rm1.getLineNumberTable().getLineNumber(0) - rm2.getLineNumberTable().getLineNumber(0);
         }
+        return 0;
     }
 
     private void writeMethodHeader(HostedMethod m, CSourceCodeWriter writer, boolean dynamic) {
@@ -169,7 +275,12 @@ public abstract class NativeBootImage extends AbstractBootImage {
             writer.append("typedef ");
         }
 
-        writer.append(CSourceCodeWriter.findCTypeName(metaAccess, nativeLibs, (ResolvedJavaType) m.getSignature().getReturnType(m.getDeclaringClass())));
+        writer.append(CSourceCodeWriter.toCTypeName(m,
+                        (ResolvedJavaType) m.getSignature().getReturnType(m.getDeclaringClass()),
+                        false,
+                        false, // GR-9242
+                        metaAccess,
+                        nativeLibs));
         writer.append(" ");
 
         assert !cEntryPointData.getSymbolName().isEmpty();
@@ -181,14 +292,18 @@ public abstract class NativeBootImage extends AbstractBootImage {
         writer.append("(");
 
         String sep = "";
+        Parameter[] parameterInfo = m.getParameters();
         for (int i = 0; i < m.getSignature().getParameterCount(false); i++) {
             writer.append(sep);
             sep = ", ";
-            writer.append(CSourceCodeWriter.findCTypeName(metaAccess, nativeLibs, (ResolvedJavaType) m.getSignature().getParameterType(i, m.getDeclaringClass())));
-            Parameter param = m.getParameters()[i];
-            if (param.isNamePresent()) {
+            writer.append(CSourceCodeWriter.toCTypeName(m,
+                            (ResolvedJavaType) m.getSignature().getParameterType(i, m.getDeclaringClass()),
+                            parameterInfo != null && parameterInfo[i].getDeclaredAnnotation(CConst.class) != null,
+                            parameterInfo != null && parameterInfo[i].getDeclaredAnnotation(CUnsigned.class) != null,
+                            metaAccess, nativeLibs));
+            if (parameterInfo != null && parameterInfo[i].isNamePresent()) {
                 writer.append(" ");
-                writer.append(param.getName());
+                writer.append(parameterInfo[i].getName());
             }
         }
         writer.appendln(");");
@@ -198,6 +313,10 @@ public abstract class NativeBootImage extends AbstractBootImage {
     private boolean shouldWriteHeader(HostedMethod method) {
         Object data = method.getWrapped().getEntryPointData();
         return data instanceof CEntryPointData && ((CEntryPointData) data).getPublishAs() == Publish.SymbolAndHeader;
+    }
+
+    private ObjectFile.Symbol defineDataSymbol(String name, Element section, long position) {
+        return objectFile.createDefinedSymbol(name, section, position, wordSize, false, true);
     }
 
     /**
@@ -215,8 +334,8 @@ public abstract class NativeBootImage extends AbstractBootImage {
             final int roConstantsSize = codeCache.getAlignedConstantsSize();
             final int cglobalsSize = ConfigurationValues.getObjectLayout().alignUp(cGlobals.getSize());
 
-            int roSectionSize = roConstantsSize;
-            int rwSectionSize = cglobalsSize;
+            long roSectionSize = roConstantsSize;
+            long rwSectionSize = cglobalsSize;
             if (!SubstrateOptions.UseHeapBaseRegister.getValue()) {
                 roSectionSize += heap.getReadOnlySectionSize();
                 rwSectionSize += heap.getWritableSectionSize();
@@ -241,31 +360,42 @@ public abstract class NativeBootImage extends AbstractBootImage {
             rwDataSection = objectFile.newProgbitsSection(rwDataSectionName, objectFile.getPageSize(), true, false, rwDataImpl);
 
             // Define symbols for the sections.
-            objectFile.createDefinedSymbol(textSection.getName(), textSection.getElement(), 0, 0, false, false);
-            objectFile.createDefinedSymbol("__svm_text_end", textSection.getElement(), codeCache.getCodeCacheSize(), 0, false, true);
-            objectFile.createDefinedSymbol(roDataSection.getName(), roDataSection.getElement(), 0, 0, false, false);
-            objectFile.createDefinedSymbol(rwDataSection.getName(), rwDataSection.getElement(), 0, 0, false, false);
+            objectFile.createDefinedSymbol(textSection.getName(), textSection, 0, 0, false, false);
+            objectFile.createDefinedSymbol("__svm_text_end", textSection, codeCache.getCodeCacheSize(), 0, false, true);
+            objectFile.createDefinedSymbol(roDataSection.getName(), roDataSection, 0, 0, false, false);
+            objectFile.createDefinedSymbol(rwDataSection.getName(), rwDataSection, 0, 0, false, false);
 
             final long constantsPartitionOffset = 0L;
             final long roConstantsEndOffset = constantsPartitionOffset + roConstantsSize;
             final long rwGlobalsEndOffset = RWDATA_CGLOBALS_PARTITION_OFFSET + ConfigurationValues.getObjectLayout().alignUp(cGlobals.getSize());
 
-            RelocatableBuffer heapSectionBuffer = null;
-            ProgbitsSectionImpl heapSectionImpl = null;
+            final RelocatableBuffer heapSectionBuffer;
+            final ProgbitsSectionImpl heapSectionImpl;
             if (SubstrateOptions.UseHeapBaseRegister.getValue()) {
                 boolean writable = !SubstrateOptions.SpawnIsolates.getValue();
-                int heapSize = heap.getReadOnlySectionSize() + heap.getWritableSectionSize();
+                final long heapSize = heap.getReadOnlySectionSize() + heap.getWritableSectionSize();
 
                 heapSectionBuffer = RelocatableBuffer.factory("heap", heapSize, objectFile.getByteOrder());
                 heapSectionImpl = new BasicProgbitsSectionImpl(heapSectionBuffer.getBytes());
                 final String heapSectionName = SectionName.SVM_HEAP.getFormatDependentName(objectFile.getFormat());
                 heapSection = objectFile.newProgbitsSection(heapSectionName, objectFile.getPageSize(), writable, false, heapSectionImpl);
+                objectFile.createDefinedSymbol(heapSection.getName(), heapSection, 0, 0, false, true);
 
                 heap.setReadOnlySection(heapSection.getName(), 0);
-                heap.setWritableSection(heapSection.getName(), heap.getReadOnlySectionSize());
-                objectFile.createDefinedDataSymbol(PosixIsolates.IMAGE_HEAP_BEGIN_SYMBOL_NAME, heapSection.getElement(), 0);
-                objectFile.createDefinedDataSymbol(PosixIsolates.IMAGE_HEAP_END_SYMBOL_NAME, heapSection.getElement(), heapSize);
+                long writableSectionOffset = heap.getReadOnlySectionSize();
+                heap.setWritableSection(heapSection.getName(), writableSectionOffset);
+                defineDataSymbol(Isolates.IMAGE_HEAP_BEGIN_SYMBOL_NAME, heapSection, 0);
+                defineDataSymbol(Isolates.IMAGE_HEAP_END_SYMBOL_NAME, heapSection, heapSize);
+                defineDataSymbol(Isolates.IMAGE_HEAP_WRITABLE_BEGIN_SYMBOL_NAME, heapSection, writableSectionOffset);
+                defineDataSymbol(Isolates.IMAGE_HEAP_WRITABLE_END_SYMBOL_NAME, heapSection, writableSectionOffset + heap.getWritableSectionSize());
+
+                final long relocatableOffset = heap.getReadOnlyRelocatablePartitionOffset();
+                final long relocatableSize = heap.getReadOnlyRelocatablePartitionSize();
+                defineDataSymbol(Isolates.IMAGE_HEAP_RELOCATABLE_BEGIN_SYMBOL_NAME, heapSection, relocatableOffset);
+                defineDataSymbol(Isolates.IMAGE_HEAP_RELOCATABLE_END_SYMBOL_NAME, heapSection, relocatableOffset + relocatableSize);
             } else {
+                heapSectionBuffer = null;
+                heapSectionImpl = null;
                 heap.setReadOnlySection(roDataSection.getName(), roConstantsEndOffset);
                 heap.setWritableSection(rwDataSection.getName(), rwGlobalsEndOffset);
             }
@@ -276,18 +406,24 @@ public abstract class NativeBootImage extends AbstractBootImage {
             // - The constants go at the beginning of the read-only data section.
             codeCache.writeConstants(roDataBuffer);
             // - Non-heap global data goes at the beginning of the read-write data section.
-            cGlobals.writeData(rwDataBuffer, (offset, symbolName) -> objectFile.createDefinedDataSymbol(symbolName, rwDataSection, Math.toIntExact(offset + RWDATA_CGLOBALS_PARTITION_OFFSET)));
-            objectFile.createDefinedDataSymbol(CGlobalDataInfo.CGLOBALDATA_BASE_SYMBOL_NAME, rwDataSection.getElement(), Math.toIntExact(RWDATA_CGLOBALS_PARTITION_OFFSET));
+            cGlobals.writeData(rwDataBuffer, (offset, symbolName) -> defineDataSymbol(symbolName, rwDataSection, offset + RWDATA_CGLOBALS_PARTITION_OFFSET));
+            defineDataSymbol(CGlobalDataInfo.CGLOBALDATA_BASE_SYMBOL_NAME, rwDataSection, RWDATA_CGLOBALS_PARTITION_OFFSET);
+
             // - Write the heap, either to its own section, or to the ro and rw data sections.
-            if (heapSectionBuffer != null) {
+            if (SubstrateOptions.UseHeapBaseRegister.getValue()) {
                 heap.writeHeap(debug, heapSectionBuffer, heapSectionBuffer);
+
+                long firstRelocOffset = heap.getFirstRelocatablePointerOffsetInSection();
+                defineDataSymbol(Isolates.IMAGE_HEAP_RELOCATABLE_FIRST_RELOC_POINTER_NAME, heapSection, firstRelocOffset);
+                assert castToByteBuffer(heapSectionBuffer).getLong((int) firstRelocOffset) == 0;
             } else {
+                assert heapSectionBuffer == null;
                 heap.writeHeap(debug, roDataBuffer, rwDataBuffer);
             }
 
             // Mark the sections with the relocations from the maps.
             // - "null" as the objectMap is because relocations from text are always to constants.
-            markRelocationSitesFromMaps(textBuffer, textImpl, null);
+            markRelocationSitesFromMaps(textBuffer, textImpl, heap.objects);
             markRelocationSitesFromMaps(roDataBuffer, roDataImpl, heap.objects);
             markRelocationSitesFromMaps(rwDataBuffer, rwDataImpl, heap.objects);
             if (heapSectionBuffer != null) {
@@ -322,6 +458,15 @@ public abstract class NativeBootImage extends AbstractBootImage {
         // -Christian
     }
 
+    /**
+     * Covariant return type overrides added by https://bugs.openjdk.java.net/browse/JDK-4774077
+     * make the cast below unnecessary as of JDK 9.
+     */
+    @SuppressWarnings("cast")
+    private static ByteBuffer castToByteBuffer(final RelocatableBuffer heapSectionBuffer) {
+        return (ByteBuffer) heapSectionBuffer.getBuffer().asReadOnlyBuffer().position(0);
+    }
+
     private void markRelocationSitesFromMaps(RelocatableBuffer relocationMap, ProgbitsSectionImpl sectionImpl, Map<Object, NativeImageHeap.ObjectInfo> objectMap) {
         // Create relocation records from a map.
         // TODO: Should this be a visitor to the map entries,
@@ -338,11 +483,10 @@ public abstract class NativeBootImage extends AbstractBootImage {
                 markFunctionRelocationSite(sectionImpl, offset, info);
             } else {
                 // A data relocation.
-                if (objectMap == null) {
+                if (sectionImpl.getElement() == textSection) {
                     // A wrinkle on relocations *from* the text section: they are *always* to
                     // constants (in the "constant partition" of the roDataSection).
-                    // The caller passes a null objectMap to indicate a such a relocation.
-                    markDataRelocationSiteFromText(sectionImpl, offset, info);
+                    markDataRelocationSiteFromText(relocationMap, sectionImpl, offset, info, objectMap);
                 } else {
                     // Relocations from other sections go to the section containing the target.
                     // Pass along the information about the target.
@@ -355,10 +499,16 @@ public abstract class NativeBootImage extends AbstractBootImage {
     }
 
     private static boolean checkEmbeddedOffset(ProgbitsSectionImpl sectionImpl, final int offset, final RelocatableBuffer.Info info) {
-        // FIXME: Do I need to check for embeddedOffsets any more?
         final ByteBuffer dataBuf = ByteBuffer.wrap(sectionImpl.getContent()).order(sectionImpl.getElement().getOwner().getByteOrder());
-        final long embeddedOffset = (info.getRelocationSize() == 8) ? dataBuf.getLong(offset) : (info.getRelocationSize() == 4) ? dataBuf.getInt(offset) : 0;
-        assert embeddedOffset == 0L : "embeddedOffset should be 0.";
+        if (info.getRelocationSize() == Long.BYTES) {
+            long value = dataBuf.getLong(offset);
+            assert value == 0 || value == 0xDEADDEADDEADDEADL : "unexpected embedded offset";
+        } else if (info.getRelocationSize() == Integer.BYTES) {
+            int value = dataBuf.getInt(offset);
+            assert value == 0 || value == 0xDEADDEAD : "unexpected embedded offset";
+        } else {
+            shouldNotReachHere("unsupported relocation size: " + info.getRelocationSize());
+        }
         return true;
     }
 
@@ -394,7 +544,7 @@ public abstract class NativeBootImage extends AbstractBootImage {
         sectionImpl.markRelocationSite(offset, info.getRelocationSize(), info.getRelocationKind(), targetSectionName, false, relocationAddend);
     }
 
-    private void markDataRelocationSiteFromText(final ProgbitsSectionImpl sectionImpl, final int offset, final RelocatableBuffer.Info info) {
+    private void markDataRelocationSiteFromText(RelocatableBuffer buffer, final ProgbitsSectionImpl sectionImpl, final int offset, final Info info, final Map<Object, ObjectInfo> objectMap) {
         assert ((info.getRelocationSize() == 4) || (info.getRelocationSize() == 8)) : "Data relocation size should be 4 or 8 bytes.";
         Object target = info.getTargetObject();
         if (target instanceof DataSectionReference) {
@@ -408,11 +558,26 @@ public abstract class NativeBootImage extends AbstractBootImage {
             sectionImpl.markRelocationSite(offset, info.getRelocationSize(), info.getRelocationKind(), rwDataSection.getName(), false, addend);
             if (dataInfo.isSymbolReference()) { // create relocation for referenced symbol
                 if (objectFile.getSymbolTable().getSymbol(data.symbolName) == null) {
-                    objectFile.createUndefinedSymbol(data.symbolName, true);
+                    objectFile.createUndefinedSymbol(data.symbolName, 0, true);
                 }
                 ProgbitsSectionImpl baseSectionImpl = (ProgbitsSectionImpl) rwDataSection.getImpl();
                 int offsetInSection = Math.toIntExact(RWDATA_CGLOBALS_PARTITION_OFFSET + dataInfo.getOffset());
                 baseSectionImpl.markRelocationSite(offsetInSection, wordSize, RelocationKind.DIRECT, data.symbolName, false, 0L);
+            }
+        } else if (target instanceof ConstantReference) {
+            // Direct object reference in code that must be patched (not a linker relocation)
+            assert info.getRelocationKind() == RelocationKind.DIRECT;
+            Object object = SubstrateObjectConstant.asObject(((ConstantReference) target).getConstant());
+            long targetOffset = objectMap.get(object).getOffsetInSection();
+            int encShift = ImageSingletons.lookup(CompressEncoding.class).getShift();
+            long targetValue = targetOffset >>> encShift;
+            assert (targetValue << encShift) == targetOffset : "Reference compression shift discards non-zero bits: " + Long.toHexString(targetOffset);
+            if (info.getRelocationSize() == Long.BYTES) {
+                buffer.getBuffer().putLong(offset, targetValue);
+            } else if (info.getRelocationSize() == Integer.BYTES) {
+                buffer.getBuffer().putInt(offset, NumUtil.safeToInt(targetValue));
+            } else {
+                shouldNotReachHere("Unsupported object reference size");
             }
         } else {
             throw shouldNotReachHere("Unsupported target object for relocation in text section");
@@ -598,8 +763,8 @@ public abstract class NativeBootImage extends AbstractBootImage {
     }
 
     public NativeBootImage(NativeImageKind k, HostedUniverse universe, HostedMetaAccess metaAccess, NativeLibraries nativeLibs, NativeImageHeap heap, NativeImageCodeCache codeCache,
-                    List<HostedMethod> entryPoints) {
-        super(k, universe, metaAccess, nativeLibs, heap, codeCache, entryPoints);
+                    List<HostedMethod> entryPoints, HostedMethod mainEntryPoint, ClassLoader imageClassLoader) {
+        super(k, universe, metaAccess, nativeLibs, heap, codeCache, entryPoints, imageClassLoader);
 
         uniqueEntryPoints.addAll(entryPoints);
 
@@ -612,12 +777,16 @@ public abstract class NativeBootImage extends AbstractBootImage {
             }
         }
 
+        if (mainEntryPoint != null) {
+            objectFile.setMainEntryPoint(globalSymbolNameForMethod(mainEntryPoint));
+        }
+
         objectFile.setByteOrder(ConfigurationValues.getTarget().arch.getByteOrder());
         int pageSize = NativeImageOptions.PageSize.getValue();
         if (pageSize > 0) {
             objectFile.setPageSize(pageSize);
         }
-        wordSize = ConfigurationValues.getObjectLayout().sizeInBytes(JavaKind.Object);
+        wordSize = FrameAccess.wordSize();
         assert objectFile.getWordSizeInBytes() == wordSize;
     }
 
@@ -658,8 +827,13 @@ public abstract class NativeBootImage extends AbstractBootImage {
             return getContent();
         }
 
+        private void defineMethodSymbol(String name, Element section, HostedMethod method, CompilationResult result) {
+            final int size = result == null ? 0 : result.getTargetCodeSize();
+            objectFile.createDefinedSymbol(name, section, method.getCodeAddressOffset(), size, true, true);
+        }
+
         @SuppressWarnings("try")
-        public void writeTextSection(DebugContext debug, final Section textSection, final List<HostedMethod> entryPoints) {
+        private void writeTextSection(DebugContext debug, final Section textSection, final List<HostedMethod> entryPoints) {
             try (Indent indent = debug.logAndIndent("TextImpl.writeTextSection")) {
                 /*
                  * Write the text content. For slightly complicated reasons, we now call
@@ -716,7 +890,7 @@ public abstract class NativeBootImage extends AbstractBootImage {
                     } else {
                         methodsBySignature.put(signatureString, current);
                     }
-                    objectFile.createDefinedSymbol(symName, textSection, current.getCodeAddressOffset(), ent.getValue().getTargetCode().length, true, true);
+                    defineMethodSymbol(symName, textSection, current, ent.getValue());
                 }
                 // 2. fq without return type -- only for entry points!
                 for (Map.Entry<String, HostedMethod> ent : methodsBySignature.entrySet()) {
@@ -731,15 +905,13 @@ public abstract class NativeBootImage extends AbstractBootImage {
                     if (entryPointIndex != -1) {
                         final String mangledSignature = mangleName(ent.getKey());
                         assert mangledSignature.equals(globalSymbolNameForMethod(method));
-                        final CompilationResult methodWithSignature = codeCache.getCompilations().get(method);
-                        objectFile.createDefinedSymbol(mangledSignature, textSection, method.getCodeAddressOffset(), 0, true, true);
+                        defineMethodSymbol(mangledSignature, textSection, method, null);
 
                         // 3. Also create @CEntryPoint linkage names in this case
                         if (cEntryData != null) {
                             assert !cEntryData.getSymbolName().isEmpty();
                             // no need for mangling: name must already be a valid external name
-                            objectFile.createDefinedSymbol(cEntryData.getSymbolName(), textSection, method.getCodeAddressOffset(),
-                                            methodWithSignature.getTargetCode().length, true, true);
+                            defineMethodSymbol(cEntryData.getSymbolName(), textSection, method, codeCache.getCompilations().get(method));
                         }
                     }
                 }

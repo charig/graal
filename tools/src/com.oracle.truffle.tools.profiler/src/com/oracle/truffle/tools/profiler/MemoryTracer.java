@@ -24,6 +24,7 @@
  */
 package com.oracle.truffle.tools.profiler;
 
+import com.oracle.truffle.api.TruffleLogger;
 import com.oracle.truffle.api.instrumentation.AllocationEvent;
 import com.oracle.truffle.api.instrumentation.AllocationEventFilter;
 import com.oracle.truffle.api.instrumentation.AllocationListener;
@@ -32,9 +33,8 @@ import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
 import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.instrumentation.TruffleInstrument;
 import com.oracle.truffle.api.nodes.LanguageInfo;
-import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.source.Source;
-import com.oracle.truffle.api.vm.PolyglotEngine;
+import com.oracle.truffle.tools.profiler.impl.CPUTracerInstrument;
 import com.oracle.truffle.tools.profiler.impl.MemoryTracerInstrument;
 import com.oracle.truffle.tools.profiler.impl.ProfilerToolFactory;
 
@@ -43,6 +43,9 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Engine;
 
 import static com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 
@@ -58,9 +61,9 @@ import static com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
  * <p>
  * NOTE: This profiler is still experimental with limited capabilities.
  * <p>
- * Usage example: {@link MemoryTracerSnippets#example}
+ * Usage example: {@codesnippet MemoryTracerSnippets#example}
  * </p>
- * 
+ *
  * @since 0.30
  */
 public final class MemoryTracer implements Closeable {
@@ -105,11 +108,11 @@ public final class MemoryTracer implements Closeable {
         if (!collecting || closed) {
             return;
         }
-        this.shadowStack = new ShadowStack(stackLimit);
         SourceSectionFilter f = this.filter;
         if (f == null) {
             f = DEFAULT_FILTER;
         }
+        this.shadowStack = new ShadowStack(stackLimit, f, env.getInstrumenter(), TruffleLogger.getLogger(CPUTracerInstrument.ID));
         this.stacksBinding = this.shadowStack.install(env.getInstrumenter(), f, false);
 
         this.activeBinding = env.getInstrumenter().attachAllocationListener(AllocationEventFilter.ANY, new Listener());
@@ -120,9 +123,9 @@ public final class MemoryTracer implements Closeable {
      *
      * @param engine the engine to find debugger for
      * @return an instance of associated {@link MemoryTracer}
-     * @since 0.30
+     * @since 1.0
      */
-    public static MemoryTracer find(PolyglotEngine engine) {
+    public static MemoryTracer find(Engine engine) {
         return MemoryTracerInstrument.getTracer(engine);
     }
 
@@ -266,8 +269,7 @@ public final class MemoryTracer implements Closeable {
                 stackOverflowed = true;
                 return;
             }
-            Node instrumentedNode = stack.getStack()[stack.getStackIndex()].getInstrumentedNode();
-            LanguageInfo languageInfo = instrumentedNode.getRootNode().getLanguageInfo();
+            LanguageInfo languageInfo = event.getLanguage();
             String metaObjectString;
             Object metaObject = env.findMetaObject(languageInfo, event.getValue());
             if (metaObject != null) {
@@ -275,7 +277,7 @@ public final class MemoryTracer implements Closeable {
             } else {
                 metaObjectString = "null";
             }
-            AllocationEventInfo info = new AllocationEventInfo(event.getLanguage(), event.getNewSize() - event.getOldSize(), event.getOldSize() != 0, metaObjectString);
+            AllocationEventInfo info = new AllocationEventInfo(languageInfo, event.getNewSize() - event.getOldSize(), event.getOldSize() != 0, metaObjectString);
             handleEvent(stack, info);
         }
 
@@ -415,17 +417,11 @@ class MemoryTracerSnippets {
     public void example() {
         // @formatter:off
         // BEGIN: MemoryTracerSnippets#example
-        PolyglotEngine engine = PolyglotEngine.
-                newBuilder().
-                build();
+        Context context = Context.create();
 
-        MemoryTracer tracer = MemoryTracer.find(engine);
+        MemoryTracer tracer = MemoryTracer.find(context.getEngine());
         tracer.setCollecting(true);
-        Source someCode = Source.
-                newBuilder("...").
-                mimeType("...").
-                name("example").build();
-        engine.eval(someCode);
+        context.eval("...", "...");
         tracer.setCollecting(false);
         // rootNodes is the recorded profile of the execution in tree form.
 

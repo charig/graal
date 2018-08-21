@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -159,7 +161,7 @@ public class HotSpotGraphBuilderPlugins {
             @Override
             public void run() {
                 BytecodeProvider replacementBytecodeProvider = replacements.getDefaultReplacementBytecodeProvider();
-                registerObjectPlugins(invocationPlugins, options, replacementBytecodeProvider);
+                registerObjectPlugins(invocationPlugins, options, config, replacementBytecodeProvider);
                 registerClassPlugins(plugins, config, replacementBytecodeProvider);
                 registerSystemPlugins(invocationPlugins, foreignCalls);
                 registerThreadPlugins(invocationPlugins, metaAccess, wordTypes, config, replacementBytecodeProvider);
@@ -174,7 +176,7 @@ public class HotSpotGraphBuilderPlugins {
                 registerBigIntegerPlugins(invocationPlugins, config, replacementBytecodeProvider);
                 registerSHAPlugins(invocationPlugins, config, replacementBytecodeProvider);
                 registerUnsafePlugins(invocationPlugins, replacementBytecodeProvider);
-                StandardGraphBuilderPlugins.registerInvocationPlugins(metaAccess, snippetReflection, invocationPlugins, replacementBytecodeProvider, true);
+                StandardGraphBuilderPlugins.registerInvocationPlugins(metaAccess, snippetReflection, invocationPlugins, replacementBytecodeProvider, true, false);
                 registerArrayPlugins(invocationPlugins, replacementBytecodeProvider);
 
                 for (NodeIntrinsicPluginFactory factory : GraalServices.load(NodeIntrinsicPluginFactory.class)) {
@@ -185,7 +187,7 @@ public class HotSpotGraphBuilderPlugins {
         return plugins;
     }
 
-    private static void registerObjectPlugins(InvocationPlugins plugins, OptionValues options, BytecodeProvider bytecodeProvider) {
+    private static void registerObjectPlugins(InvocationPlugins plugins, OptionValues options, GraalHotSpotVMConfig config, BytecodeProvider bytecodeProvider) {
         Registration r = new Registration(plugins, Object.class, bytecodeProvider);
         if (!GeneratePIC.getValue(options)) {
             // FIXME: clone() requires speculation and requires a fix in here (to check that
@@ -209,6 +211,12 @@ public class HotSpotGraphBuilderPlugins {
             });
         }
         r.registerMethodSubstitution(ObjectSubstitutions.class, "hashCode", Receiver.class);
+        if (config.inlineNotify()) {
+            r.registerMethodSubstitution(ObjectSubstitutions.class, "notify", Receiver.class);
+        }
+        if (config.inlineNotifyAll()) {
+            r.registerMethodSubstitution(ObjectSubstitutions.class, "notifyAll", Receiver.class);
+        }
     }
 
     private static void registerClassPlugins(Plugins plugins, GraalHotSpotVMConfig config, BytecodeProvider bytecodeProvider) {

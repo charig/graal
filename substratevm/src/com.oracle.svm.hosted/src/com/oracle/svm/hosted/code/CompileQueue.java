@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -59,7 +61,7 @@ import org.graalvm.compiler.debug.Indent;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.compiler.graph.Node.NodeIntrinsic;
 import org.graalvm.compiler.lir.RedundantMoveElimination;
-import org.graalvm.compiler.lir.alloc.lsra.LinearScanPhase;
+import org.graalvm.compiler.lir.alloc.RegisterAllocationPhase;
 import org.graalvm.compiler.lir.asm.CompilationResultBuilder;
 import org.graalvm.compiler.lir.asm.CompilationResultBuilderFactory;
 import org.graalvm.compiler.lir.asm.DataBuilder;
@@ -141,6 +143,7 @@ import com.oracle.svm.hosted.substitute.DeletedMethod;
 import jdk.vm.ci.code.BytecodeFrame;
 import jdk.vm.ci.code.CodeCacheProvider;
 import jdk.vm.ci.code.DebugInfo;
+import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.site.Call;
 import jdk.vm.ci.code.site.Infopoint;
 import jdk.vm.ci.code.site.InfopointReason;
@@ -535,6 +538,11 @@ public class CompileQueue {
 
                     boolean inlined = false;
                     for (Invoke invoke : graph.getInvokes()) {
+                        if (invoke instanceof InvokeNode) {
+                            throw VMError.shouldNotReachHere("Found InvokeNode without exception edge: invocation of " +
+                                            invoke.callTarget().targetMethod().format("%H.%n(%p)") + " in " + (graph.method() == null ? graph.toString() : graph.method().format("%H.%n(%p)")));
+                        }
+
                         if (invoke.useForInlining()) {
                             inlined |= tryInlineTrivial(graph, invoke, !inlined);
                         }
@@ -808,24 +816,10 @@ public class CompileQueue {
         if (!mustNotAllocateCallee(caller) && mustNotAllocate(callee)) {
             return false;
         }
-
-        if (isNotExecuted(caller) || isNotExecuted(callee)) {
-            return false;
-        }
-
         if (!callee.canBeInlined()) {
             return false;
         }
         return invoke.useForInlining();
-    }
-
-    /**
-     * Hook for subclasses.
-     *
-     * @param method
-     */
-    protected boolean isNotExecuted(HostedMethod method) {
-        return false;
     }
 
     private static void handleSpecialization(final HostedMethod method, MethodCallTargetNode targetNode, HostedMethod invokeTarget, HostedMethod invokeImplementation) {
@@ -874,8 +868,8 @@ public class CompileQueue {
     class HostedCompilationResultBuilderFactory implements CompilationResultBuilderFactory {
         @Override
         public CompilationResultBuilder createBuilder(CodeCacheProvider codeCache, ForeignCallsProvider foreignCalls, FrameMap frameMap, Assembler asm, DataBuilder dataBuilder,
-                        FrameContext frameContext, OptionValues options, DebugContext debug, CompilationResult compilationResult) {
-            return new CompilationResultBuilder(codeCache, foreignCalls, frameMap, asm, dataBuilder, frameContext, options, debug, compilationResult, EconomicMap.wrapMap(dataCache));
+                        FrameContext frameContext, OptionValues options, DebugContext debug, CompilationResult compilationResult, Register nullRegister) {
+            return new CompilationResultBuilder(codeCache, foreignCalls, frameMap, asm, dataBuilder, frameContext, options, debug, compilationResult, nullRegister, EconomicMap.wrapMap(dataCache));
         }
     }
 
@@ -928,7 +922,7 @@ public class CompileQueue {
             };
             try (Indent indent = debug.logAndIndent("compile %s", method)) {
                 GraalCompiler.compileGraph(graph, method, backend.getProviders(), backend, null, optimisticOpts, method.getProfilingInfo(), suites, lirSuites, result,
-                                new HostedCompilationResultBuilderFactory());
+                                new HostedCompilationResultBuilderFactory(), false);
             }
             method.getProfilingInfo().setCompilerIRSize(StructuredGraph.class, method.compilationInfo.graph.getNodeCount());
             method.compilationInfo.numNodesAfterCompilation = graph.getNodeCount();
@@ -978,7 +972,7 @@ public class CompileQueue {
 
     private static void removeDeoptTargetOptimizations(LIRSuites lirSuites) {
         lirSuites.getPostAllocationOptimizationStage().findPhase(RedundantMoveElimination.class).remove();
-        lirSuites.getAllocationStage().findPhaseInstance(LinearScanPhase.class).setNeverSpillConstants(true);
+        lirSuites.getAllocationStage().findPhaseInstance(RegisterAllocationPhase.class).setNeverSpillConstants(true);
     }
 
     private static boolean verifyDeoptTarget(HostedMethod method, CompilationResult result) {

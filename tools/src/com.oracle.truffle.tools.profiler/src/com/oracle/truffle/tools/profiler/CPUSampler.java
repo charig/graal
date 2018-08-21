@@ -24,20 +24,6 @@
  */
 package com.oracle.truffle.tools.profiler;
 
-import com.oracle.truffle.api.TruffleContext;
-import com.oracle.truffle.api.instrumentation.ContextsListener;
-import com.oracle.truffle.api.instrumentation.EventBinding;
-import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
-import com.oracle.truffle.api.instrumentation.StandardTags;
-import com.oracle.truffle.api.instrumentation.StandardTags.RootTag;
-import com.oracle.truffle.api.instrumentation.TruffleInstrument;
-import com.oracle.truffle.api.instrumentation.TruffleInstrument.Env;
-import com.oracle.truffle.api.nodes.LanguageInfo;
-import com.oracle.truffle.api.source.Source;
-import com.oracle.truffle.api.vm.PolyglotEngine;
-import com.oracle.truffle.tools.profiler.impl.CPUSamplerInstrument;
-import com.oracle.truffle.tools.profiler.impl.ProfilerToolFactory;
-
 import java.io.Closeable;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -48,6 +34,22 @@ import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.oracle.truffle.api.TruffleLogger;
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.Engine;
+
+import com.oracle.truffle.api.TruffleContext;
+import com.oracle.truffle.api.instrumentation.ContextsListener;
+import com.oracle.truffle.api.instrumentation.EventBinding;
+import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
+import com.oracle.truffle.api.instrumentation.StandardTags;
+import com.oracle.truffle.api.instrumentation.StandardTags.RootTag;
+import com.oracle.truffle.api.instrumentation.TruffleInstrument;
+import com.oracle.truffle.api.instrumentation.TruffleInstrument.Env;
+import com.oracle.truffle.api.nodes.LanguageInfo;
+import com.oracle.truffle.tools.profiler.impl.CPUSamplerInstrument;
+import com.oracle.truffle.tools.profiler.impl.ProfilerToolFactory;
+
 /**
  * Implementation of a sampling based profiler for
  * {@linkplain com.oracle.truffle.api.TruffleLanguage Truffle languages} built on top of the
@@ -57,7 +59,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * intervals, i.e. the state of the stack is copied and saved into trees of {@linkplain ProfilerNode
  * nodes}, which represent the profile of the execution.
  * <p>
- * Usage example: {@link CPUSamplerSnippets#example}
+ * Usage example: {@codesnippet CPUSamplerSnippets#example}
  *
  * @since 0.30
  */
@@ -253,11 +255,9 @@ public final class CPUSampler implements Closeable {
     /**
      * Finds {@link CPUSampler} associated with given engine.
      *
-     * @param engine the engine to find debugger for
-     * @return an instance of associated {@link CPUSampler}
-     * @since 0.30
+     * @since 1.0
      */
-    public static CPUSampler find(PolyglotEngine engine) {
+    public static CPUSampler find(Engine engine) {
         return CPUSamplerInstrument.getSampler(engine);
     }
 
@@ -480,11 +480,11 @@ public final class CPUSampler implements Closeable {
             f = DEFAULT_FILTER;
         }
         this.stackOverflowed = false;
-        this.shadowStack = new ShadowStack(stackLimit);
+        this.shadowStack = new ShadowStack(stackLimit, f, env.getInstrumenter(), TruffleLogger.getLogger(CPUSamplerInstrument.ID));
         this.stacksBinding = this.shadowStack.install(env.getInstrumenter(), combine(f, mode), mode == Mode.EXCLUDE_INLINED_ROOTS);
 
         this.samplerTask = new SamplingTimerTask();
-        this.samplerThread.schedule(samplerTask, 0, period);
+        this.samplerThread.schedule(samplerTask, delay, period);
 
     }
 
@@ -529,14 +529,8 @@ public final class CPUSampler implements Closeable {
 
     private class SamplingTimerTask extends TimerTask {
 
-        int runcount = 0;
-
         @Override
         public void run() {
-            runcount++;
-            if (runcount < delay / period) {
-                return;
-            }
             if (delaySamplingUntilNonInternalLangInit && !nonInternalLanguageContextInitialized) {
                 return;
             }
@@ -622,14 +616,11 @@ class CPUSamplerSnippets {
     public void example() {
         // @formatter:off
         // BEGIN: CPUSamplerSnippets#example
-        PolyglotEngine engine = PolyglotEngine.newBuilder().build();
+        Context context = Context.create();
 
-        CPUSampler sampler = CPUSampler.find(engine);
+        CPUSampler sampler = CPUSampler.find(context.getEngine());
         sampler.setCollecting(true);
-        Source someCode = Source.newBuilder("...").
-                mimeType("...").
-                name("example").build();
-        engine.eval(someCode);
+        context.eval("...", "...");
         sampler.setCollecting(false);
         sampler.close();
         // Read information about the roots of the tree.

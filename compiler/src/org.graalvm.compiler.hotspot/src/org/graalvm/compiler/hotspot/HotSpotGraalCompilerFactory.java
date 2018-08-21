@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -26,9 +28,8 @@ import static jdk.vm.ci.common.InitTimer.timer;
 import static org.graalvm.compiler.hotspot.HotSpotGraalOptionValues.GRAAL_OPTION_PROPERTY_PREFIX;
 
 import java.io.PrintStream;
-import java.util.Collections;
-import java.util.Map;
 
+import org.graalvm.compiler.api.runtime.GraalRuntime;
 import org.graalvm.compiler.debug.MethodFilter;
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.options.OptionKey;
@@ -119,7 +120,7 @@ public final class HotSpotGraalCompilerFactory extends HotSpotJVMCICompilerFacto
         if (isGraalPredicate != null) {
             isGraalPredicate.onCompilerConfigurationFactorySelection(factory);
         }
-        HotSpotGraalCompiler compiler = createCompiler(runtime, options, factory);
+        HotSpotGraalCompiler compiler = createCompiler("VM", runtime, options, factory);
         // Only the HotSpotGraalRuntime associated with the compiler created via
         // jdk.vm.ci.runtime.JVMCIRuntime.getCompiler() is registered for receiving
         // VM events.
@@ -131,14 +132,17 @@ public final class HotSpotGraalCompilerFactory extends HotSpotJVMCICompilerFacto
      * Creates a new {@link HotSpotGraalRuntime} object and a new {@link HotSpotGraalCompiler} and
      * returns the latter.
      *
+     * @param runtimeNameQualifier a qualifier to be added to the {@linkplain GraalRuntime#getName()
+     *            name} of the {@linkplain HotSpotGraalCompiler#getGraalRuntime() runtime} created
+     *            by this method
      * @param runtime the JVMCI runtime on which the {@link HotSpotGraalRuntime} is built
      * @param compilerConfigurationFactory factory for the {@link CompilerConfiguration}
      */
     @SuppressWarnings("try")
-    public static HotSpotGraalCompiler createCompiler(JVMCIRuntime runtime, OptionValues options, CompilerConfigurationFactory compilerConfigurationFactory) {
+    public static HotSpotGraalCompiler createCompiler(String runtimeNameQualifier, JVMCIRuntime runtime, OptionValues options, CompilerConfigurationFactory compilerConfigurationFactory) {
         HotSpotJVMCIRuntime jvmciRuntime = (HotSpotJVMCIRuntime) runtime;
         try (InitTimer t = timer("HotSpotGraalRuntime.<init>")) {
-            HotSpotGraalRuntime graalRuntime = new HotSpotGraalRuntime(jvmciRuntime, compilerConfigurationFactory, options);
+            HotSpotGraalRuntime graalRuntime = new HotSpotGraalRuntime(runtimeNameQualifier, jvmciRuntime, compilerConfigurationFactory, options);
             return new HotSpotGraalCompiler(jvmciRuntime, graalRuntime, graalRuntime.getOptions());
         }
     }
@@ -158,7 +162,13 @@ public final class HotSpotGraalCompilerFactory extends HotSpotJVMCICompilerFacto
     }
 
     @Override
-    public CompilationLevel adjustCompilationLevel(Class<?> declaringClass, String name, String signature, boolean isOsr, CompilationLevel level) {
+    public CompilationLevel adjustCompilationLevel(Object declaringClassObject, String name, String signature, boolean isOsr, CompilationLevel level) {
+        if (declaringClassObject instanceof String) {
+            // This must be SVM mode in which case only GraalCompileC1Only matters since Graal and
+            // JVMCI are already compiled.
+            return checkGraalCompileOnlyFilter((String) declaringClassObject, name, signature, level);
+        }
+        Class<?> declaringClass = (Class<?>) declaringClassObject;
         return adjustCompilationLevelInternal(declaringClass, name, signature, level);
     }
 
@@ -196,12 +206,5 @@ public final class HotSpotGraalCompilerFactory extends HotSpotJVMCICompilerFacto
             }
         }
         return level;
-    }
-
-    public Map<String, Object> mbeans() {
-        HotSpotGraalCompiler compiler = createCompiler(HotSpotJVMCIRuntime.runtime());
-        String name = "org.graalvm.compiler.hotspot:type=Options";
-        Object bean = ((HotSpotGraalRuntime) compiler.getGraalRuntime()).getMBean();
-        return Collections.singletonMap(name, bean);
     }
 }

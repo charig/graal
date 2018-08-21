@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -94,6 +96,10 @@ public class ELFObjectFile extends ObjectFile {
         this.fileClass = fileClass;
     }
 
+    @Override
+    public void setMainEntryPoint(String name) {
+    }
+
     /**
      * This class implements the shstrtab section. It's simply a {@link ELFStrtab} whose content is
      * grabbed from the set of section names.
@@ -158,7 +164,7 @@ public class ELFObjectFile extends ObjectFile {
     }
 
     @Override
-    public Symbol createDefinedSymbol(String name, Element baseSection, int position, int size, boolean isCode, boolean isGlobal) {
+    public Symbol createDefinedSymbol(String name, Element baseSection, long position, int size, boolean isCode, boolean isGlobal) {
         ELFSymtab symtab = createSymbolTable();
         return symtab.newDefinedEntry(name, (Section) baseSection, position, size, isGlobal, isCode);
     }

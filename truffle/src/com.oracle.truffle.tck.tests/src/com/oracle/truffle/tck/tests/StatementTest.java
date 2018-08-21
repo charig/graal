@@ -49,7 +49,7 @@ public class StatementTest {
 
     @Parameterized.Parameters(name = "{0}")
     public static Collection<? extends TestRun> createControlFlowTests() {
-        context = new TestContext();
+        context = new TestContext(StatementTest.class);
         final Collection<? extends TestRun> testRuns = TestUtil.createTestRuns(
                         TestUtil.getRequiredLanguages(context),
                         TestUtil.getRequiredValueLanguages(context),
@@ -76,7 +76,10 @@ public class StatementTest {
 
     @Before
     public void setUp() {
-        Engine.newBuilder().build();
+        // JUnit mixes test executions from different classes. There are still tests using the
+        // deprecated PolyglotEngine. For tests executed by Parametrized runner
+        // creating Context as a test parameter we need to ensure that correct SPI is used.
+        Engine.create().close();
     }
 
     public StatementTest(final TestRun testRun) {
@@ -97,6 +100,13 @@ public class StatementTest {
                 TestUtil.validateResult(testRun, null, pe);
                 success = true;
             }
+        } catch (PolyglotException | AssertionError e) {
+            throw new AssertionError(
+                            TestUtil.formatErrorMessage(
+                                            "Unexpected Exception: " + e.getMessage(),
+                                            testRun,
+                                            context),
+                            e);
         } finally {
             TEST_RESULT_MATCHER.accept(new AbstractMap.SimpleImmutableEntry<>(testRun, success));
         }

@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -35,10 +37,12 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.graalvm.compiler.nodes.CallTargetNode.InvokeKind;
@@ -48,17 +52,20 @@ import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.flow.InvokeTypeFlow;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 
+import jdk.vm.ci.meta.ResolvedJavaMethod;
+
 public final class CallTreePrinter {
 
     public static void print(BigBang bigbang, String path, String reportName) {
-        ReportUtils.report("call tree", path + "/reports", "call_tree_" + reportName, "txt",
-                        writer -> CallTreePrinter.doPrint(writer, bigbang));
-    }
-
-    private static void doPrint(PrintWriter out, BigBang bigbang) {
         CallTreePrinter printer = new CallTreePrinter(bigbang);
         printer.buildCallTree();
-        printer.print(out);
+
+        ReportUtils.report("call tree", path + "/reports", "call_tree_" + reportName, "txt",
+                        writer -> printer.printMethods(writer));
+        ReportUtils.report("list of used classes", path + "/reports", "used_classes_" + reportName, "txt",
+                        writer -> printer.printClasses(writer, false));
+        ReportUtils.report("list of used packages", path + "/reports", "used_packages_" + reportName, "txt",
+                        writer -> printer.printClasses(writer, true));
     }
 
     interface Node {
@@ -136,13 +143,13 @@ public final class CallTreePrinter {
     private final BigBang bigbang;
     private final Map<AnalysisMethod, MethodNode> methodToNode;
 
-    private CallTreePrinter(BigBang bigbang) {
+    public CallTreePrinter(BigBang bigbang) {
         this.bigbang = bigbang;
         /* Use linked hash map for predictable iteration order. */
         this.methodToNode = new LinkedHashMap<>();
     }
 
-    private void buildCallTree() {
+    public void buildCallTree() {
 
         /* Add all the roots to the tree. */
         bigbang.getUniverse().getMethods().stream()
@@ -213,7 +220,7 @@ public final class CallTreePrinter {
 
     private static final String METHOD_FORMAT = "%H.%n(%P):%R";
 
-    private void print(PrintWriter out) {
+    private void printMethods(PrintWriter out) {
         out.println("VM Entry Points");
         Iterator<MethodNode> iterator = methodToNode.values().stream().filter(n -> n.isEntryPoint).iterator();
         while (iterator.hasNext()) {
@@ -254,5 +261,37 @@ public final class CallTreePrinter {
                 }
             }
         }
+    }
+
+    private void printClasses(PrintWriter out, boolean packageNameOnly) {
+        List<String> classList = new ArrayList<>(classesSet(packageNameOnly));
+        classList.sort(null);
+        for (String name : classList) {
+            out.println(name);
+        }
+    }
+
+    public Set<String> classesSet(boolean packageNameOnly) {
+        Set<String> classSet = new HashSet<>();
+        for (ResolvedJavaMethod method : methodToNode.keySet()) {
+            String name = method.getDeclaringClass().toJavaName(true);
+            if (packageNameOnly) {
+                name = packagePrefix(name);
+                if (name.contains("$$Lambda$")) {
+                    /* Also strip synthetic package names added for lambdas. */
+                    name = packagePrefix(name);
+                }
+            }
+            classSet.add(name);
+        }
+        return classSet;
+    }
+
+    private static String packagePrefix(String name) {
+        int lastDot = name.lastIndexOf('.');
+        if (lastDot == -1) {
+            return name;
+        }
+        return name.substring(0, lastDot);
     }
 }

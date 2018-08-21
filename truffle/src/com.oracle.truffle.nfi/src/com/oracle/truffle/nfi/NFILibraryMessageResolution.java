@@ -92,7 +92,7 @@ class NFILibraryMessageResolution {
     abstract static class InvokeSymbolNode extends Node {
 
         @Child private CachedLookupSymbolNode cached = CachedLookupSymbolNodeGen.create();
-        @Child private Node execute = Message.createExecute(0).createNode();
+        @Child private Node execute = Message.EXECUTE.createNode();
 
         public Object access(NFILibrary receiver, String symbol, Object... args) {
             TruffleObject obj = cached.executeLookup(receiver, symbol);
@@ -101,6 +101,14 @@ class NFILibraryMessageResolution {
             } catch (InteropException ex) {
                 throw ex.raise();
             }
+        }
+    }
+
+    @Resolve(message = "KEYS")
+    abstract static class KeysNode extends Node {
+
+        public Object access(NFILibrary receiver) {
+            return receiver.getSymbols();
         }
     }
 

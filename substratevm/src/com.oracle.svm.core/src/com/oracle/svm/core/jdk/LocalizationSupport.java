@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -31,10 +33,12 @@ import java.util.ResourceBundle;
 
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.options.OptionType;
+import org.graalvm.compiler.serviceprovider.GraalServices;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 
 import com.oracle.svm.core.option.HostedOptionKey;
+import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.VMError;
 
 public final class LocalizationSupport {
@@ -50,13 +54,16 @@ public final class LocalizationSupport {
     public LocalizationSupport() {
         charsets = new HashMap<>();
         cache = new HashMap<>();
-        addToCache("sun.util.resources.CalendarData");
-        addToCache("sun.util.resources.CurrencyNames");
-        addToCache("sun.util.resources.LocaleNames");
-        addToCache("sun.util.resources.TimeZoneNames");
-        addToCache("sun.text.resources.CollationData");
-        addToCache("sun.text.resources.FormatData");
-        addToCache("sun.util.logging.resources.logging");
+        if (GraalServices.Java8OrEarlier) {
+            /* For JDK-8, add these resource bundles to the cache. */
+            addToCache("sun.util.resources.CalendarData");
+            addToCache("sun.util.resources.CurrencyNames");
+            addToCache("sun.util.resources.LocaleNames");
+            addToCache("sun.util.resources.TimeZoneNames");
+            addToCache("sun.text.resources.CollationData");
+            addToCache("sun.text.resources.FormatData");
+            addToCache("sun.util.logging.resources.logging");
+        }
 
         String[] bundles = Options.IncludeResourceBundles.getValue().split(",");
         for (String bundle : bundles) {
@@ -75,15 +82,20 @@ public final class LocalizationSupport {
         cache.put(bundleName, bundle);
     }
 
+    private final String includeResourceBundlesOption = SubstrateOptionsParser.commandArgument(Options.IncludeResourceBundles, "");
+
     /**
+     * Get cached resource bundle.
+     *
      * @param locale this parameter is not currently used.
      */
     public ResourceBundle getCached(String baseName, Locale locale) {
         ResourceBundle result = cache.get(baseName);
         if (result == null) {
-            throw VMError.unsupportedFeature("Access of resource bundle that was not pre-cached: " + baseName);
+            String errorMessage = "Resource bundle not found " + baseName + ". " +
+                            "Register the resource bundle using the option " + includeResourceBundlesOption + baseName + ".";
+            throw VMError.unsupportedFeature(errorMessage);
         }
         return result;
     }
-
 }

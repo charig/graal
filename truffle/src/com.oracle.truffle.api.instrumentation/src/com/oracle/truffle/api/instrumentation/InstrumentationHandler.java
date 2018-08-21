@@ -58,7 +58,6 @@ import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleOptions;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.impl.Accessor;
-import com.oracle.truffle.api.impl.Accessor.Nodes;
 import com.oracle.truffle.api.impl.DispatchOutputStream;
 import com.oracle.truffle.api.instrumentation.ProbeNode.EventChainNode;
 import com.oracle.truffle.api.instrumentation.TruffleInstrument.Env;
@@ -72,7 +71,7 @@ import com.oracle.truffle.api.source.SourceSection;
 
 /**
  * Central coordinator class for the Truffle instrumentation framework. Allocated once per
- * {@linkplain com.oracle.truffle.api.vm.PolyglotEngine engine}.
+ * {@linkplain org.graalvm.polyglot.Engine engine}.
  */
 public final class InstrumentationHandler {
 
@@ -311,8 +310,8 @@ public final class InstrumentationHandler {
             trace("Initialize instrument class %s %n", instrumentClass);
         }
         try {
-            env.instrumenter.instrument = (TruffleInstrument) instrumentClass.newInstance();
-        } catch (InstantiationException | IllegalAccessException e) {
+            env.instrumenter.instrument = (TruffleInstrument) instrumentClass.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
             failInstrumentInitialization(env, String.format("Failed to create new instrumenter class %s", instrumentClass.getName()), e);
             return;
         }
@@ -328,6 +327,14 @@ public final class InstrumentationHandler {
         InstrumentClientInstrumenter instrumenter = ((InstrumentClientInstrumenter) instrumenterMap.get(vmObject));
         instrumenter.env.options = optionValues;
         instrumenter.create(expectedServices);
+    }
+
+    void finalizeInstrumenter(Object key) {
+        AbstractInstrumenter finalisingInstrumenter = instrumenterMap.get(key);
+        if (finalisingInstrumenter == null) {
+            throw new AssertionError("Instrumenter already disposed.");
+        }
+        finalisingInstrumenter.doFinalize();
     }
 
     void disposeInstrumenter(Object key, boolean cleanupRequired) {
@@ -369,8 +376,8 @@ public final class InstrumentationHandler {
         }
     }
 
-    Instrumenter forLanguage(LanguageInfo info) {
-        return new LanguageClientInstrumenter<>(info);
+    Instrumenter forLanguage(TruffleLanguage<?> language) {
+        return new LanguageClientInstrumenter<>(language);
     }
 
     <T> EventBinding<T> addExecutionBinding(EventBinding.Source<T> binding) {
@@ -408,6 +415,20 @@ public final class InstrumentationHandler {
         }
 
         return binding;
+    }
+
+    private void visitLoadedSourceSections(EventBinding.Source<?> binding) {
+        if (TRACE) {
+            trace("BEGIN: Visiting loaded source sections %s, %s%n", binding.getFilter(), binding.getElement());
+        }
+
+        if (!loadedRoots.isEmpty()) {
+            visitRoots(loadedRoots, new NotifyLoadedWithBindingVisitor(binding));
+        }
+
+        if (TRACE) {
+            trace("END: Visited loaded source sections %s, %s%n", binding.getFilter(), binding.getElement());
+        }
     }
 
     <T> EventBinding<T> addSourceBinding(EventBinding.Source<T> binding, boolean notifyLoaded) {
@@ -842,8 +863,7 @@ public final class InstrumentationHandler {
     }
 
     @SuppressWarnings({"unchecked", "deprecation"})
-    private void insertWrapperImpl(Node originalNode, SourceSection sourceSection) {
-        Node node = originalNode;
+    private void insertWrapperImpl(Node node, SourceSection sourceSection) {
         Node parent = node.getParent();
         if (parent instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode) {
             // already wrapped, need to invalidate the wrapper something changed
@@ -856,11 +876,11 @@ public final class InstrumentationHandler {
             if (node instanceof InstrumentableNode) {
                 wrapper = ((InstrumentableNode) node).createWrapper(probe);
                 if (wrapper == null) {
-                    throw new IllegalStateException("No wrapper returned for " + originalNode);
+                    throw new IllegalStateException("No wrapper returned for " + node + " of class " + node.getClass().getName());
                 }
             } else {
                 Class<?> factory = null;
-                Class<?> currentClass = originalNode.getClass();
+                Class<?> currentClass = node.getClass();
                 while (currentClass != null) {
                     Instrumentable instrumentable = currentClass.getAnnotation(Instrumentable.class);
                     if (instrumentable != null) {
@@ -881,25 +901,25 @@ public final class InstrumentationHandler {
                 if (TRACE) {
                     trace("Insert wrapper for %s, section %s%n", node, sourceSection);
                 }
-                wrapper = ((InstrumentableFactory<Node>) factory.newInstance()).createWrapper(originalNode, probe);
+                wrapper = ((InstrumentableFactory<Node>) factory.getDeclaredConstructor().newInstance()).createWrapper(node, probe);
             }
 
         } catch (Exception e) {
-            throw new IllegalStateException("Failed to create wrapper node. ", e);
+            throw new IllegalStateException("Failed to create wrapper of " + node, e);
         }
 
         if (!(wrapper instanceof Node)) {
             throw new IllegalStateException(String.format("Implementation of %s must be a subclass of %s.",
-                            com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode.class.getSimpleName(), Node.class.getSimpleName()));
+                            wrapper.getClass().getName(), Node.class.getSimpleName()));
         }
 
         final Node wrapperNode = (Node) wrapper;
         if (wrapperNode.getParent() != null) {
-            throw new IllegalStateException(String.format("Instance of provided %s is already adopted by another parent.",
-                            com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode.class.getSimpleName()));
+            throw new IllegalStateException(String.format("Instance of provided wrapper %s is already adopted by another parent: %s",
+                            wrapper.getClass().getName(), wrapperNode.getParent().getClass().getName()));
         }
         if (parent == null) {
-            throw new IllegalStateException(String.format("Instance of instrumentable %s is not adopted by a parent.", Node.class.getSimpleName()));
+            throw new IllegalStateException(String.format("Instance of instrumentable node %s is not adopted by a parent.", node.getClass().getName()));
         }
 
         if (!NodeUtil.isReplacementSafe(parent, node, wrapperNode)) {
@@ -907,7 +927,7 @@ public final class InstrumentationHandler {
                             String.format("WrapperNode implementation %s cannot be safely replaced in parent node class %s.", wrapperNode.getClass().getName(), parent.getClass().getName()));
         }
 
-        originalNode.replace(wrapperNode, "Insert instrumentation wrapper node.");
+        node.replace(wrapperNode, "Insert instrumentation wrapper node.");
 
         assert probe.getContext().validEventContext();
     }
@@ -926,6 +946,10 @@ public final class InstrumentationHandler {
 
     private <T> EventBinding<T> attachSourceSectionListener(AbstractInstrumenter abstractInstrumenter, SourceSectionFilter filter, T listener, boolean notifyLoaded) {
         return addSourceSectionBinding(new EventBinding.Source<>(abstractInstrumenter, filter, null, listener, false), notifyLoaded);
+    }
+
+    private void visitLoadedSourceSections(AbstractInstrumenter abstractInstrumenter, SourceSectionFilter filter, LoadSourceSectionListener listener) {
+        visitLoadedSourceSections(new EventBinding.Source<>(abstractInstrumenter, filter, null, listener, false));
     }
 
     private <T> EventBinding<T> attachExecuteSourceListener(AbstractInstrumenter abstractInstrumenter, SourceSectionFilter filter, T listener, boolean notifyLoaded) {
@@ -998,9 +1022,7 @@ public final class InstrumentationHandler {
         }
     }
 
-    Set<Class<?>> getProvidedTags(LanguageInfo language) {
-        Nodes nodesAccess = AccessorInstrumentHandler.nodesAccess();
-        TruffleLanguage<?> lang = nodesAccess.getLanguageSpi(language);
+    Set<Class<?>> getProvidedTags(TruffleLanguage<?> lang) {
         if (lang == null) {
             return Collections.emptySet();
         }
@@ -1016,7 +1038,7 @@ public final class InstrumentationHandler {
     }
 
     Set<Class<?>> getProvidedTags(Node root) {
-        return getProvidedTags(root.getRootNode().getLanguageInfo());
+        return getProvidedTags(AccessorInstrumentHandler.nodesAccess().getLanguage(root.getRootNode()));
     }
 
     @SuppressWarnings("deprecation")
@@ -1486,14 +1508,9 @@ public final class InstrumentationHandler {
             if (TRACE) {
                 trace("Create instrument %s class %s %n", instrument, instrumentClass);
             }
-            try {
-                services = env.onCreate(instrument);
-                if (expectedServices != null && !TruffleOptions.AOT) {
-                    checkServices(expectedServices);
-                }
-            } catch (Throwable e) {
-                failInstrumentInitialization(env, String.format("Failed calling onCreate of instrument class %s", instrumentClass.getName()), e);
-                return;
+            services = env.onCreate(instrument);
+            if (expectedServices != null && !TruffleOptions.AOT) {
+                checkServices(expectedServices);
             }
             if (TRACE) {
                 trace("Created instrument %s class %s %n", instrument, instrumentClass);
@@ -1549,6 +1566,11 @@ public final class InstrumentationHandler {
         }
 
         @Override
+        void doFinalize() {
+            instrument.onFinalize(env);
+        }
+
+        @Override
         void dispose() {
             instrument.onDispose(env);
         }
@@ -1572,6 +1594,10 @@ public final class InstrumentationHandler {
      * implementations}.
      */
     final class EngineInstrumenter extends AbstractInstrumenter {
+
+        @Override
+        void doFinalize() {
+        }
 
         @Override
         void dispose() {
@@ -1624,9 +1650,11 @@ public final class InstrumentationHandler {
     final class LanguageClientInstrumenter<T> extends AbstractInstrumenter {
 
         private final LanguageInfo languageInfo;
+        private final TruffleLanguage<?> language;
 
-        LanguageClientInstrumenter(LanguageInfo info) {
-            this.languageInfo = info;
+        LanguageClientInstrumenter(TruffleLanguage<?> language) {
+            this.language = language;
+            this.languageInfo = AccessorInstrumentHandler.langAccess().getLanguageInfo(language);
         }
 
         @Override
@@ -1662,7 +1690,7 @@ public final class InstrumentationHandler {
 
         @Override
         void verifyFilter(SourceSectionFilter filter) {
-            Set<Class<?>> providedTags = getProvidedTags(languageInfo);
+            Set<Class<?>> providedTags = getProvidedTags(language);
             // filters must not reference tags not declared in @RequiredTags
             Set<Class<?>> referencedTags = filter.getReferencedTags();
             if (!providedTags.containsAll(referencedTags)) {
@@ -1678,11 +1706,9 @@ public final class InstrumentationHandler {
                     sep = ", ";
                 }
                 builder.append("}");
-                Nodes langAccess = AccessorInstrumentHandler.nodesAccess();
-                TruffleLanguage<?> lang = langAccess.getLanguageSpi(languageInfo);
                 throw new IllegalArgumentException(String.format("The attached filter %s references the following tags %s which are not declared as provided by the language. " +
                                 "To fix this annotate the language class %s with @%s(%s).",
-                                filter, missingTags, lang.getClass().getName(), ProvidedTags.class.getSimpleName(), builder));
+                                filter, missingTags, language.getClass().getName(), ProvidedTags.class.getSimpleName(), builder));
             }
         }
 
@@ -1694,6 +1720,11 @@ public final class InstrumentationHandler {
         @Override
         public <S extends ThreadsListener> EventBinding<S> attachThreadsListener(S listener, boolean includeStartedThreads) {
             throw new UnsupportedOperationException("Not supported in language instrumenter.");
+        }
+
+        @Override
+        void doFinalize() {
+            // nothing to do
         }
 
         @Override
@@ -1713,6 +1744,8 @@ public final class InstrumentationHandler {
      * privileges may vary.
      */
     abstract class AbstractInstrumenter extends Instrumenter {
+
+        abstract void doFinalize();
 
         abstract void dispose();
 
@@ -1784,6 +1817,12 @@ public final class InstrumentationHandler {
         public <T extends LoadSourceSectionListener> EventBinding<T> attachLoadSourceSectionListener(SourceSectionFilter filter, T listener, boolean notifyLoaded) {
             verifyFilter(filter);
             return InstrumentationHandler.this.attachSourceSectionListener(this, filter, listener, notifyLoaded);
+        }
+
+        @Override
+        public void visitLoadedSourceSections(SourceSectionFilter filter, LoadSourceSectionListener listener) {
+            verifyFilter(filter);
+            InstrumentationHandler.this.visitLoadedSourceSections(this, filter, listener);
         }
 
         @Override
@@ -2099,16 +2138,21 @@ public final class InstrumentationHandler {
             }
 
             @Override
+            public void finalizeInstrument(Object instrumentationHandler, Object key) {
+                ((InstrumentationHandler) instrumentationHandler).finalizeInstrumenter(key);
+            }
+
+            @Override
             public void disposeInstrument(Object instrumentationHandler, Object key, boolean cleanupRequired) {
                 ((InstrumentationHandler) instrumentationHandler).disposeInstrumenter(key, cleanupRequired);
             }
 
             @Override
-            public void collectEnvServices(Set<Object> collectTo, Object languageShared, LanguageInfo info) {
+            public void collectEnvServices(Set<Object> collectTo, Object languageShared, TruffleLanguage<?> language) {
                 InstrumentationHandler instrumentationHandler = (InstrumentationHandler) engineAccess().getInstrumentationHandler(languageShared);
-                Instrumenter instrumenter = instrumentationHandler.forLanguage(info);
+                Instrumenter instrumenter = instrumentationHandler.forLanguage(language);
                 collectTo.add(instrumenter);
-                AllocationReporter allocationReporter = instrumentationHandler.getAllocationReporter(info);
+                AllocationReporter allocationReporter = instrumentationHandler.getAllocationReporter(AccessorInstrumentHandler.langAccess().getLanguageInfo(language));
                 collectTo.add(allocationReporter);
             }
 

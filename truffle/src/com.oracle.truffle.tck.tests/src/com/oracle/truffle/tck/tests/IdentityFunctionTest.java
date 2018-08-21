@@ -63,7 +63,7 @@ public class IdentityFunctionTest {
 
     @Parameterized.Parameters(name = "{0}")
     public static Collection<? extends TestRun> createExpressionTests() {
-        context = new TestContext();
+        context = new TestContext(IdentityFunctionTest.class);
         final Collection<? extends TestRun> testRuns = TestUtil.createTestRuns(
                         TestUtil.getRequiredLanguages(context),
                         TestUtil.getRequiredValueLanguages(context),
@@ -102,9 +102,9 @@ public class IdentityFunctionTest {
                 Value parameter = snippetRun.getParameters().get(0);
                 TypeDescriptor parameterType = TypeDescriptor.forValue(parameter);
                 TypeDescriptor resultType = TypeDescriptor.forValue(snippetRun.getResult());
-                if (!resultType.isAssignable(parameterType) || !resultType.isAssignable(resultType)) {
+                if (!parameterType.isAssignable(resultType) || !resultType.isAssignable(resultType)) {
                     throw new AssertionError(String.format(
-                                    "Identity function return type must parameter type. Expected %s got %s.",
+                                    "Identity function result type must contain the parameter type. Parameter type: %s Result type: %s.",
                                     parameterType,
                                     resultType));
                 }
@@ -120,7 +120,10 @@ public class IdentityFunctionTest {
 
     @Before
     public void setUp() {
-        Engine.newBuilder().build();
+        // JUnit mixes test executions from different classes. There are still tests using the
+        // deprecated PolyglotEngine. For tests executed by Parametrized runner
+        // creating Context as a test parameter we need to ensure that correct SPI is used.
+        Engine.create().close();
     }
 
     public IdentityFunctionTest(final TestRun testRun) {
@@ -142,6 +145,13 @@ public class IdentityFunctionTest {
                 TestUtil.validateResult(testRun, null, pe);
                 success = true;
             }
+        } catch (PolyglotException | AssertionError e) {
+            throw new AssertionError(
+                            TestUtil.formatErrorMessage(
+                                            "Unexpected Exception: " + e.getMessage(),
+                                            testRun,
+                                            context),
+                            e);
         } finally {
             TEST_RESULT_MATCHER.accept(new AbstractMap.SimpleImmutableEntry<>(testRun, success));
         }

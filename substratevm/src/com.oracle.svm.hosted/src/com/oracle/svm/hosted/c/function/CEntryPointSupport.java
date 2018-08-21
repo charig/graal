@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -59,7 +61,7 @@ import jdk.vm.ci.meta.ResolvedJavaMethod;
 @AutomaticFeature
 public class CEntryPointSupport implements GraalFeature {
     @Override
-    public void registerInvocationPlugins(Providers providers, SnippetReflectionProvider snippetReflection, InvocationPlugins invocationPlugins, boolean hosted) {
+    public void registerInvocationPlugins(Providers providers, SnippetReflectionProvider snippetReflection, InvocationPlugins invocationPlugins, boolean analysis, boolean hosted) {
         registerEntryPointActionsPlugins(invocationPlugins);
         registerEntryPointContextPlugins(invocationPlugins);
     }
@@ -140,6 +142,13 @@ public class CEntryPointSupport implements GraalFeature {
                 return true;
             }
         });
+        r.register1("isCurrentThreadAttachedTo", Isolate.class, new InvocationPlugin() {
+            @Override
+            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode isolate) {
+                b.addPush(JavaKind.Boolean, new CEntryPointUtilityNode(UtilityAction.IsAttached, isolate));
+                return true;
+            }
+        });
     }
 
     private static void registerEntryPointContextPlugins(InvocationPlugins plugins) {
@@ -167,13 +176,6 @@ public class CEntryPointSupport implements GraalFeature {
                 } else {
                     b.addPush(JavaKind.Object, ConstantNode.forIntegerKind(FrameAccess.getWordKind(), CEntryPointSetup.SINGLE_ISOLATE_SENTINEL.rawValue()));
                 }
-                return true;
-            }
-        });
-        r.register1("isCurrentThreadAttachedTo", Isolate.class, new InvocationPlugin() {
-            @Override
-            public boolean apply(GraphBuilderContext b, ResolvedJavaMethod targetMethod, Receiver receiver, ValueNode isolate) {
-                b.addPush(JavaKind.Boolean, new CEntryPointUtilityNode(UtilityAction.IsAttached, isolate));
                 return true;
             }
         });

@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -76,8 +78,8 @@ public class HeapPolicy {
 
         Object result;
         try {
-            result = policy.newInstance();
-        } catch (InstantiationException | IllegalAccessException ex) {
+            result = policy.getDeclaredConstructor().newInstance();
+        } catch (Exception ex) {
             throw UserError.abort("policy " + className + " cannot be instantiated.");
         }
 
@@ -90,17 +92,24 @@ public class HeapPolicy {
     /*
      * Instance field access methods.
      */
-
     CollectOnAllocationPolicy getCollectOnAllocationPolicy() {
         return collectOnAllocationPolicy;
     }
 
-    public static Word getProducedHeapChunkZapValue() {
-        return producedHeapChunkZapValue;
+    public static Word getProducedHeapChunkZapWord() {
+        return producedHeapChunkZapWord;
     }
 
-    public static Word getConsumedHeapChunkZapValue() {
-        return consumedHeapChunkZapValue;
+    public static int getProducedHeapChunkZapInt() {
+        return producedHeapChunkZapInt;
+    }
+
+    public static Word getConsumedHeapChunkZapWord() {
+        return consumedHeapChunkZapWord;
+    }
+
+    public static int getConsumedHeapChunkZapInt() {
+        return consumedHeapChunkZapInt;
     }
 
     /*
@@ -160,7 +169,7 @@ public class HeapPolicy {
     /** The maximum size of the young generation as an UnsignedWord. */
     public static UnsignedWord getMaximumYoungGenerationSize() {
         final Log trace = Log.noopLog().string("[HeapPolicy.getMaximumYoungGenerationSize:");
-        if (maximumYoungGenerationSize.aboveThan(Word.zero())) {
+        if (maximumYoungGenerationSize.aboveThan(WordFactory.zero())) {
             /* If someone has set the young generation size, use that value. */
             trace.string("  returns: ").unsigned(maximumYoungGenerationSize).string(" ]").newline();
             return maximumYoungGenerationSize;
@@ -170,15 +179,11 @@ public class HeapPolicy {
         if (xmn.getEpoch() > 0) {
             /* If `-Xmn` has been parsed from the command line, use that value. */
             result = WordFactory.unsigned(xmn.getValue());
-        } else if (HeapPolicyOptions.YoungGenerationSize.getValue().longValue() != HeapPolicyOptions.YoungGenerationSize.getDefaultValue().longValue()) {
-            /* If YoungGenerationSize has a non-default value, then use that value. */
-            result = WordFactory.unsigned(HeapPolicyOptions.YoungGenerationSize.getValue().longValue());
         } else {
             /* The default value is just big enough. */
             result = m(256);
         }
         trace.string("  -Xmn.epoch: ").unsigned(xmn.getEpoch()).string("  -Xmn.value: ").unsigned(xmn.getValue())
-                        .string("  YoungGenerationSize: ").unsigned(HeapPolicyOptions.YoungGenerationSize.getValue().longValue())
                         .string("  returns: ").unsigned(result).string("]").newline();
         return result;
     }
@@ -193,7 +198,7 @@ public class HeapPolicy {
     /** The maximum size of the heap as an UnsignedWord. */
     public static UnsignedWord getMaximumHeapSize() {
         final Log trace = Log.noopLog().string("[HeapPolicy.getMaximumHeapSize:");
-        if (maximumHeapSize.aboveThan(Word.zero())) {
+        if (maximumHeapSize.aboveThan(WordFactory.zero())) {
             /* If someone has set the maximum heap size, use that value. */
             trace.string("  returns: ").unsigned(maximumHeapSize).string(" ]").newline();
             return maximumHeapSize;
@@ -203,13 +208,6 @@ public class HeapPolicy {
         if (xmx.getEpoch() > 0) {
             /* If `-Xmx` has been parsed from the command line, use that value. */
             result = WordFactory.unsigned(xmx.getValue());
-        } else if ((HeapPolicyOptions.YoungGenerationSize.getValue().longValue() != HeapPolicyOptions.YoungGenerationSize.getDefaultValue().longValue()) &&
-                        (HeapPolicyOptions.OldGenerationSize.getValue().longValue() != HeapPolicyOptions.OldGenerationSize.getDefaultValue().longValue())) {
-            /*
-             * If both YoungGenerationSize and OldGenerationSize have non-default values, then sum
-             * them.
-             */
-            result = WordFactory.unsigned(HeapPolicyOptions.YoungGenerationSize.getValue().longValue() + HeapPolicyOptions.OldGenerationSize.getValue().longValue());
         } else {
             /*
              * Otherwise, the maximum size of the heap is a fraction of the size of the physical
@@ -221,8 +219,6 @@ public class HeapPolicy {
         maximumHeapSize = result;
         if (trace.isEnabled()) {
             trace.string("  -Xmx.epoch: ").unsigned(xmx.getEpoch()).string("  -Xmx.value: ").unsigned(xmx.getValue())
-                            .string("  YoungGenerationSize: ").unsigned(HeapPolicyOptions.YoungGenerationSize.getValue().longValue())
-                            .string("  OldGenerationSize: ").unsigned(HeapPolicyOptions.OldGenerationSize.getValue().longValue())
                             .string("  MaximumHeapSizePercent: ").unsigned(HeapPolicyOptions.MaximumHeapSizePercent.getValue().intValue())
                             .string("  PhysicalMemory.size(): ").unsigned(PhysicalMemory.size())
                             .newline();
@@ -243,7 +239,7 @@ public class HeapPolicy {
     /** The minimum size of the heap as an UnsignedWord. */
     public static UnsignedWord getMinimumHeapSize() {
         final Log trace = Log.noopLog().string("[HeapPolicy.getMinimumHeapSize:");
-        if (minimumHeapSize.aboveThan(Word.zero())) {
+        if (minimumHeapSize.aboveThan(WordFactory.zero())) {
             /* If someone has set the minimum heap size, use that value. */
             trace.string("  returns: ").unsigned(minimumHeapSize).string(" ]").newline();
             return minimumHeapSize;
@@ -314,10 +310,12 @@ public class HeapPolicy {
     }
 
     /* - The value to use for zapping produced chunks. */
-    private static final Word producedHeapChunkZapValue = WordFactory.unsigned(0xbaadbeefbaadbeefL);
+    private static final int producedHeapChunkZapInt = 0xbaadbeef;
+    private static final Word producedHeapChunkZapWord = WordFactory.unsigned((long) producedHeapChunkZapInt << 32 | producedHeapChunkZapInt);
 
     /* - The value to use for zapping. */
-    private static final Word consumedHeapChunkZapValue = WordFactory.unsigned(0xdeadbeefdeadbeefL);
+    private static final int consumedHeapChunkZapInt = 0xdeadbeef;
+    private static final Word consumedHeapChunkZapWord = WordFactory.unsigned((long) consumedHeapChunkZapInt << 32 | consumedHeapChunkZapInt);
 
     static final AtomicUnsigned bytesAllocatedSinceLastCollection = new AtomicUnsigned();
 

@@ -57,7 +57,7 @@ import org.graalvm.polyglot.Source;
  */
 public abstract class AbstractDebugTest {
 
-    private DebuggerTester tester;
+    protected DebuggerTester tester;
     private final ArrayDeque<DebuggerTester> sessionStack = new ArrayDeque<>();
 
     AbstractDebugTest() {
@@ -87,6 +87,10 @@ public abstract class AbstractDebugTest {
 
     protected final DebuggerSession startSession(SourceElement... sourceElements) {
         return tester.startSession(sourceElements);
+    }
+
+    protected final String getOutput() {
+        return tester.getOut();
     }
 
     protected final Thread getEvalThread() {
@@ -147,7 +151,7 @@ public abstract class AbstractDebugTest {
 
     protected void checkStack(DebugStackFrame frame, String... expectedFrame) {
         Map<String, DebugValue> values = new HashMap<>();
-        for (DebugValue value : frame) {
+        for (DebugValue value : frame.getScope().getDeclaredValues()) {
             values.put(value.getName(), value);
         }
         Assert.assertEquals(expectedFrame.length / 2, values.size());
@@ -162,6 +166,10 @@ public abstract class AbstractDebugTest {
 
     protected final String expectDone() {
         return tester.expectDone();
+    }
+
+    protected final Throwable expectThrowable() {
+        return tester.expectThrowable();
     }
 
     protected final void expectSuspended(SuspendedCallback handler) {

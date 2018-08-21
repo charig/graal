@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -23,6 +25,9 @@
 package org.graalvm.compiler.truffle.compiler;
 
 import static jdk.vm.ci.runtime.JVMCICompiler.INVOCATION_ENTRY_BCI;
+import static org.graalvm.compiler.core.CompilationWrapper.ExceptionAction.Diagnose;
+import static org.graalvm.compiler.core.GraalCompilerOptions.CompilationBailoutAction;
+import static org.graalvm.compiler.core.GraalCompilerOptions.CompilationFailureAction;
 import static org.graalvm.compiler.core.common.CompilationRequestIdentifier.asCompilationRequest;
 import static org.graalvm.compiler.phases.OptimisticOptimizations.ALL;
 import static org.graalvm.compiler.phases.OptimisticOptimizations.Optimization.RemoveNeverExecutedCode;
@@ -70,6 +75,7 @@ import org.graalvm.compiler.nodes.StructuredGraph.AllowAssumptions;
 import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
 import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration.BytecodeExceptionMode;
 import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration.Plugins;
+import org.graalvm.compiler.options.EnumOptionKey;
 import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.OptimisticOptimizations;
 import org.graalvm.compiler.phases.PhaseSuite;
@@ -114,14 +120,6 @@ public abstract class TruffleCompilerImpl implements TruffleCompiler {
     protected final Backend backend;
     protected final SnippetReflectionProvider snippetReflection;
     protected final TrufflePostCodeInstallationTaskFactory codeInstallationTaskFactory;
-
-    /**
-     * The instrumentation object is used by the Truffle instrumentation to count executions. The
-     * value is lazily initialized the first time it is requested because it depends on the Truffle
-     * options, and tests that need the instrumentation table need to override these options after
-     * the TruffleRuntime object is created.
-     */
-    private volatile InstrumentPhase.Instrumentation instrumentation;
 
     public static final OptimisticOptimizations Optimizations = ALL.remove(
                     UseExceptionProbability,
@@ -168,23 +166,6 @@ public abstract class TruffleCompilerImpl implements TruffleCompiler {
         System.arraycopy(head, 0, skippedExceptionTypes, 0, head.length);
         System.arraycopy(tail, 0, skippedExceptionTypes, head.length, tail.length);
         return skippedExceptionTypes;
-    }
-
-    /**
-     * Gets the instrumentation manager associated with this compiler, creating it first if
-     * necessary. Each compiler instance has its own instrumentation manager.
-     */
-    public final InstrumentPhase.Instrumentation getInstrumentation() {
-        if (instrumentation == null) {
-            synchronized (this) {
-                if (instrumentation == null) {
-                    OptionValues options = TruffleCompilerOptions.getOptions();
-                    long[] accessTable = new long[TruffleCompilerOptions.TruffleInstrumentationTableSize.getValue(options)];
-                    instrumentation = new InstrumentPhase.Instrumentation(accessTable);
-                }
-            }
-        }
-        return instrumentation;
     }
 
     /**
@@ -253,7 +234,7 @@ public abstract class TruffleCompilerImpl implements TruffleCompiler {
 
     @Override
     public void shutdown() {
-        InstrumentPhase.Instrumentation ins = this.instrumentation;
+        InstrumentPhase.Instrumentation ins = this.partialEvaluator.instrumentation;
         if (ins != null) {
             OptionValues options = TruffleCompilerOptions.getOptions();
             if (getValue(TruffleInstrumentBranches) || getValue(TruffleInstrumentBoundaries)) {
@@ -439,7 +420,7 @@ public abstract class TruffleCompilerImpl implements TruffleCompiler {
 
             CompilationResult compilationResult = createCompilationResult(name, graph.compilationId());
             result = GraalCompiler.compileGraph(graph, graph.method(), providers, backend, graphBuilderSuite, Optimizations, graph.getProfilingInfo(), suites, lirSuites, compilationResult,
-                            CompilationResultBuilderFactory.Default);
+                            CompilationResultBuilderFactory.Default, false);
         } catch (Throwable e) {
             throw debug.handle(e);
         }
@@ -473,7 +454,7 @@ public abstract class TruffleCompilerImpl implements TruffleCompiler {
         return new CompilationResult(compilationIdentifier, name);
     }
 
-    protected abstract PhaseSuite<HighTierContext> createGraphBuilderSuite();
+    public abstract PhaseSuite<HighTierContext> createGraphBuilderSuite();
 
     public PartialEvaluator getPartialEvaluator() {
         return partialEvaluator;
@@ -506,6 +487,22 @@ public abstract class TruffleCompilerImpl implements TruffleCompiler {
         @Override
         public String toString() {
             return compilable.toString();
+        }
+
+        @Override
+        protected ExceptionAction lookupAction(OptionValues options, EnumOptionKey<ExceptionAction> actionKey, Throwable cause) {
+            // Respect current action if it has been explicitly set.
+            if (!actionKey.hasBeenSet(options)) {
+                if (actionKey == CompilationFailureAction ||
+                                (actionKey == CompilationBailoutAction && ((BailoutException) cause).isPermanent())) {
+                    if (TruffleCompilerRuntime.areTruffleCompilationExceptionsFatal()) {
+                        // Get more info for Truffle compilation exceptions
+                        // that will cause the VM to exit.
+                        return Diagnose;
+                    }
+                }
+            }
+            return super.lookupAction(options, actionKey, cause);
         }
 
         @Override

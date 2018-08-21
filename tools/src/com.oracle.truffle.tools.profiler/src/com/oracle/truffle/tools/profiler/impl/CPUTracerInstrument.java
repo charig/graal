@@ -24,14 +24,15 @@
  */
 package com.oracle.truffle.tools.profiler.impl;
 
+import java.io.PrintStream;
+
+import org.graalvm.options.OptionDescriptors;
+import org.graalvm.polyglot.Engine;
+import org.graalvm.polyglot.Instrument;
+
 import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
 import com.oracle.truffle.api.instrumentation.TruffleInstrument;
-import com.oracle.truffle.api.vm.PolyglotEngine;
-import com.oracle.truffle.api.vm.PolyglotRuntime;
 import com.oracle.truffle.tools.profiler.CPUTracer;
-import org.graalvm.options.OptionDescriptors;
-
-import java.io.PrintStream;
 
 /**
  * The {@linkplain TruffleInstrument instrument} for the CPU tracer.
@@ -85,14 +86,13 @@ public class CPUTracerInstrument extends TruffleInstrument {
      * Does a lookup in the runtime instruments of the engine and returns an instance of the
      * {@link CPUTracer}.
      *
-     * @since 0.30
+     * @since 0.33
      */
-    public static CPUTracer getTracer(PolyglotEngine engine) {
-        PolyglotRuntime.Instrument instrument = engine.getRuntime().getInstruments().get(ID);
+    public static CPUTracer getTracer(Engine engine) {
+        Instrument instrument = engine.getInstruments().get(ID);
         if (instrument == null) {
             throw new IllegalStateException("Tracer is not installed.");
         }
-        instrument.setEnabled(true);
         return instrument.lookup(CPUTracer.class);
     }
 

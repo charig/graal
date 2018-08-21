@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -51,7 +53,6 @@ import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.PolyglotException.StackFrame;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.proxy.Proxy;
-import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
@@ -59,31 +60,17 @@ import org.junit.Test;
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.interop.ArityException;
-import com.oracle.truffle.api.interop.ForeignAccess;
-import com.oracle.truffle.api.interop.Message;
-import com.oracle.truffle.api.interop.TruffleObject;
-import com.oracle.truffle.api.interop.UnknownIdentifierException;
-import com.oracle.truffle.api.interop.UnsupportedMessageException;
-import com.oracle.truffle.api.interop.UnsupportedTypeException;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.test.polyglot.ValueAssert.Trait;
 
 /**
  * Tests class for {@link Context#asValue(Object)}.
  */
-public class ValueHostConversionTest {
-
-    private Context context;
+public class ValueHostConversionTest extends AbstractPolyglotTest {
 
     @Before
     public void setUp() {
-        context = Context.newBuilder().allowHostAccess(true).build();
-    }
-
-    @After
-    public void tearDown() {
-        context.close();
+        setupEnv();
     }
 
     @Test
@@ -268,23 +255,6 @@ public class ValueHostConversionTest {
                         return getCurrentContext(ProxyLanguage.class).env.lookupHostSymbol(clazz.getName());
                     }
                 });
-            }
-
-            @Override
-            protected Object findMetaObject(LanguageContext ctx, Object value) {
-                // TODO Value.getMetaObject() should call HostLanguage.findMetaObject instead
-                if (value instanceof TruffleObject) {
-                    try {
-                        return ForeignAccess.sendInvoke(Message.createInvoke(0).createNode(), (TruffleObject) value, "getClass");
-                    } catch (UnknownIdentifierException | UnsupportedMessageException | UnsupportedTypeException | ArityException e) {
-                    }
-                    try {
-                        Object instanceClass = ForeignAccess.sendRead(Message.READ.createNode(), (TruffleObject) value, "class");
-                        return ForeignAccess.sendInvoke(Message.createInvoke(0).createNode(), (TruffleObject) instanceClass, "getClass");
-                    } catch (UnknownIdentifierException | UnsupportedMessageException | UnsupportedTypeException | ArityException e) {
-                    }
-                }
-                return "";
             }
         });
         return context.asValue(context.eval(ProxyLanguage.ID, clazz.getName()));
@@ -1035,7 +1005,6 @@ public class ValueHostConversionTest {
     public void testIllegalArgumentInt() {
         Value value = context.asValue(new TestIllegalArgumentInt());
 
-        // valid cases
         assertEquals(42, value.getMember("foo").execute(42).asInt());
         assertEquals(42, value.getMember("foo").execute((byte) 42).asInt());
         assertEquals(42, value.getMember("foo").execute((short) 42).asInt());
@@ -1043,33 +1012,26 @@ public class ValueHostConversionTest {
         assertEquals(42, value.getMember("foo").execute((float) 42).asInt());
         assertEquals(42, value.getMember("foo").execute((double) 42).asInt());
 
-        // TODO currently broken -> fix
-        // assertHostPolyglotException(() -> value.getMember("foo").execute((Object) null),
-        // NullPointerException.class, "");
-        // assertHostPolyglotException(() -> value.getMember("foo").execute(""),
-        // ClassCastException.class,
-        // "");
-        // assertHostPolyglotException(() -> value.getMember("foo").execute(42.2d),
-        // ClassCastException.class, "");
-        // assertHostPolyglotException(() -> value.getMember("foo").execute(42.2f),
-        // ClassCastException.class, "");
-        // assertHostPolyglotException(() -> value.getMember("foo").execute(Float.NaN),
-        // ClassCastException.class, "");
-        // assertHostPolyglotException(() -> value.getMember("foo").execute(Double.NaN),
-        // ClassCastException.class, "");
+        assertHostPolyglotException(() -> value.getMember("foo").execute((Object) null),
+                        IllegalArgumentException.class);
+        assertHostPolyglotException(() -> value.getMember("foo").execute(""),
+                        IllegalArgumentException.class);
+        assertHostPolyglotException(() -> value.getMember("foo").execute(42.2d),
+                        IllegalArgumentException.class);
+        assertHostPolyglotException(() -> value.getMember("foo").execute(42.2f),
+                        IllegalArgumentException.class);
+        assertHostPolyglotException(() -> value.getMember("foo").execute(Float.NaN),
+                        IllegalArgumentException.class);
+        assertHostPolyglotException(() -> value.getMember("foo").execute(Double.NaN),
+                        IllegalArgumentException.class);
     }
 
-    // private static void assertHostPolyglotException(Runnable r, Class<?> hostExceptionType,
-    // String
-    // message) {
-    // try {
-    // r.run();
-    // } catch (PolyglotException e) {
-    // assertTrue(e.isHostException());
-    // assertTrue(e.asHostException().getClass().getName(),
-    // hostExceptionType.isInstance(e.asHostException()));
-    // assertEquals(message, e.getMessage());
-    // }
-    // }
+    private static void assertHostPolyglotException(Runnable r, Class<?> hostExceptionType) {
+        try {
+            r.run();
+        } catch (Exception e) {
+            assertTrue(e.getClass().getName(), hostExceptionType.isInstance(e));
+        }
+    }
 
 }

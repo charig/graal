@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -22,6 +24,7 @@
  */
 package org.graalvm.compiler.truffle.test;
 
+import static org.graalvm.compiler.serviceprovider.GraalServices.Java8OrEarlier;
 import static org.graalvm.compiler.test.SubprocessUtil.getVMCommandLine;
 import static org.graalvm.compiler.test.SubprocessUtil.withoutDebuggerArguments;
 
@@ -60,8 +63,6 @@ public class LazyInitializationTest {
     private final Class<?> hotSpotGraalCompilerFactoryOptions;
     private final Class<?> hotSpotGraalJVMCIServiceLocatorShared;
     private final Class<?> jvmciVersionCheck;
-
-    private static boolean Java8OrEarlier = System.getProperty("java.specification.version").compareTo("1.9") < 0;
 
     public LazyInitializationTest() {
         hotSpotVMEventListener = forNameOrNull("jdk.vm.ci.hotspot.services.HotSpotVMEventListener");
@@ -169,7 +170,7 @@ public class LazyInitializationTest {
         for (Class<?> cls : loadedGraalClasses) {
             if (OptionDescriptors.class.isAssignableFrom(cls)) {
                 try {
-                    OptionDescriptors optionDescriptors = cls.asSubclass(OptionDescriptors.class).newInstance();
+                    OptionDescriptors optionDescriptors = cls.asSubclass(OptionDescriptors.class).getDeclaredConstructor().newInstance();
                     for (OptionDescriptor option : optionDescriptors) {
                         whitelist.add(option.getDeclaringClass());
                         whitelist.add(option.getOptionValueType());

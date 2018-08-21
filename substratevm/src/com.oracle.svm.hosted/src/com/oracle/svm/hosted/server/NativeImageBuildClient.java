@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -25,10 +27,9 @@ package com.oracle.svm.hosted.server;
 import static com.oracle.svm.hosted.server.NativeImageBuildServer.PORT_PREFIX;
 import static com.oracle.svm.hosted.server.NativeImageBuildServer.extractArg;
 
-import java.io.BufferedReader;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.OutputStreamWriter;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -37,7 +38,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
 
-import com.oracle.shadowed.com.google.gson.Gson;
 import com.oracle.svm.hosted.server.SubstrateServerMessage.ServerCommand;
 
 public class NativeImageBuildClient {
@@ -81,20 +81,19 @@ public class NativeImageBuildClient {
 
         try (
                         Socket svmClient = new Socket((String) null, port);
-                        OutputStreamWriter os = new OutputStreamWriter(svmClient.getOutputStream());
-                        BufferedReader is = new BufferedReader(new InputStreamReader(svmClient.getInputStream()))) {
+                        DataOutputStream os = new DataOutputStream(svmClient.getOutputStream());
+                        DataInputStream is = new DataInputStream(svmClient.getInputStream())) {
+
             SubstrateServerMessage.send(new SubstrateServerMessage(command, payload), os);
-            String line;
             if (ServerCommand.GET_VERSION.equals(command)) {
-                line = is.readLine();
-                if (line != null) {
-                    SubstrateServerMessage response = new Gson().fromJson(line, SubstrateServerMessage.class);
+                SubstrateServerMessage response = SubstrateServerMessage.receive(is);
+                if (response != null) {
                     outln.accept(new String(response.payload));
                 }
             } else {
 
-                while ((line = is.readLine()) != null) {
-                    SubstrateServerMessage serverCommand = new Gson().fromJson(line, SubstrateServerMessage.class);
+                SubstrateServerMessage serverCommand;
+                while ((serverCommand = SubstrateServerMessage.receive(is)) != null) {
                     Consumer<byte[]> selectedConsumer;
                     switch (serverCommand.command) {
                         case WRITE_OUT:

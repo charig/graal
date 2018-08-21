@@ -28,6 +28,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Collection;
+import java.util.Iterator;
 import java.util.Objects;
 
 import com.oracle.truffle.api.CallTarget;
@@ -250,6 +252,18 @@ public final class EventContext {
     }
 
     /**
+     * Returns all execution event nodes in the insertion order at this location, whose event
+     * bindings are contained in the given collection. This is useful to be able to sort out
+     * multiple bindings when installed at the same source location.
+     *
+     * @param bindings a collection of bindings to find the event nodes for at this context location
+     * @since 1.0
+     */
+    public Iterator<ExecutionEventNode> lookupExecutionEventNodes(Collection<EventBinding<? extends ExecutionEventNodeFactory>> bindings) {
+        return probeNode.lookupExecutionEventNodes(bindings);
+    }
+
+    /**
      * Create an unwind throwable, that when thrown, abruptly breaks execution of a node and unwinds
      * it off the execution stack. This is a a shortcut for
      * {@link #createUnwind(Object, EventBinding)} with the current binding, only the event listener
@@ -333,7 +347,14 @@ public final class EventContext {
     public ExecutionEventNode findDirectParentEventNode(final ExecutionEventNodeFactory factory) {
         Node parent = getInstrumentedNode().getParent();
 
-        assert parent instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode;  // this is the wrapper of the current node
+        assert parent instanceof com.oracle.truffle.api.instrumentation.InstrumentableFactory.WrapperNode;  // this
+                                                                                                            // is
+                                                                                                            // the
+                                                                                                            // wrapper
+                                                                                                            // of
+                                                                                                            // the
+                                                                                                            // current
+                                                                                                            // node
         parent = parent.getParent();           // this is the parent node
         parent = parent.getParent();           // this is the wrapper of the parent node
         return findEventNode(factory, parent);

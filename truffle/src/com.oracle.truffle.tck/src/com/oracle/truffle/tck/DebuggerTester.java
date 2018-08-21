@@ -51,7 +51,6 @@ import com.oracle.truffle.api.debug.SuspendedCallback;
 import com.oracle.truffle.api.debug.SuspendedEvent;
 import com.oracle.truffle.api.debug.SourceElement;
 import com.oracle.truffle.api.source.SourceSection;
-import com.oracle.truffle.api.vm.PolyglotEngine;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Engine;
@@ -93,6 +92,11 @@ public final class DebuggerTester implements AutoCloseable {
             PrintStream out = System.out;
             out.println("DebuggerTester: " + message);
         }
+    }
+
+    private static void err(String message) {
+        PrintStream out = System.err;
+        out.println("DebuggerTester: " + message);
     }
 
     private final ExecutingLoop executingLoop;
@@ -212,11 +216,6 @@ public final class DebuggerTester implements AutoCloseable {
     }
 
     /**
-     * Starts a new {@link PolyglotEngine#eval(Source) evaluation} on the background thread. Only
-     * one evaluation can be active at a time. Please ensure that {@link #expectDone()} completed
-     * successfully before starting a new evaluation. Throws an {@link IllegalStateException} if
-     * another evaluation is still executing or the tester is already closed.
-     *
      * @since 0.16
      * @deprecated Use {@link #startEval(org.graalvm.polyglot.Source)} instead.
      */
@@ -365,7 +364,8 @@ public final class DebuggerTester implements AutoCloseable {
     public void expectKilled() {
         Throwable error = expectThrowable();
         if (error instanceof PolyglotException) {
-            Assert.assertTrue(error.getMessage(), error.getMessage().contains("KillException"));
+            Assert.assertTrue(((PolyglotException) error).isCancelled());
+            Assert.assertTrue(error.getMessage(), error.getMessage().contains("Execution cancelled by a debugging session."));
             return;
         }
         throw new AssertionError("Expected killed bug got error: " + error, error);
@@ -444,7 +444,7 @@ public final class DebuggerTester implements AutoCloseable {
      * @param language the source language
      * @since 0.33
      */
-    public void assertLineBreakpointsResolution(String sourceWithMarks, String resolvedMarkName, String language) throws IOException {
+    public void assertLineBreakpointsResolution(String sourceWithMarks, String resolvedMarkName, String language) {
         Pattern br = Pattern.compile("(" + resolvedMarkName + "\\d+_|" + resolvedMarkName + "\\d+-\\d+_)");
         Map<Integer, Integer> bps = new HashMap<>();
         String sourceString = sourceWithMarks;
@@ -476,7 +476,7 @@ public final class DebuggerTester implements AutoCloseable {
         if (TRACE) {
             trace("sourceString = '" + sourceString + "'");
         }
-        final Source source = Source.newBuilder(language, sourceString, "testMisplacedLineBreakpoint." + language).build();
+        final Source source = Source.newBuilder(language, sourceString, "testMisplacedLineBreakpoint." + language).buildLiteral();
         com.oracle.truffle.api.source.Source tsource = DebuggerTester.getSourceImpl(source);
         for (int l = 1; l < source.getLineCount(); l++) {
             if (!bps.containsKey(l)) {
@@ -525,9 +525,9 @@ public final class DebuggerTester implements AutoCloseable {
      * and breakpoint resolution marks in the form of "R&lt;number&gt;_" where &lt;number&gt; is an
      * identification of the breakpoint. These marks need to be placed at the proper breakpoint
      * submission/resolution line/column position. When several submitted breakpoints resolve to the
-     * same position, an interval can be specified in the form of
-     * "R&lt;start number&gt;-&lt;end number&gt;_", where both start and end line numbers are
-     * inclusive. The marks are stripped off before execution.
+     * same position, an interval can be specified in the form of "R&lt;start number&gt;-&lt;end
+     * number&gt;_", where both start and end line numbers are inclusive. The marks are stripped off
+     * before execution.
      * <p>
      * The guest language code with marks may look like:
      *
@@ -550,7 +550,7 @@ public final class DebuggerTester implements AutoCloseable {
      * @param language the source language
      * @since 0.33
      */
-    public void assertColumnBreakpointsResolution(String sourceWithMarks, String breakpointMarkName, String resolvedMarkName, String language) throws IOException {
+    public void assertColumnBreakpointsResolution(String sourceWithMarks, String breakpointMarkName, String resolvedMarkName, String language) {
         Pattern br = Pattern.compile("([" + breakpointMarkName + resolvedMarkName + "]\\d+_|" + resolvedMarkName + "\\d+-\\d+_)");
         Map<Integer, int[]> bps = new HashMap<>();
         String sourceString = sourceWithMarks;
@@ -586,7 +586,7 @@ public final class DebuggerTester implements AutoCloseable {
         if (TRACE) {
             trace("sourceString = '" + sourceString + "'");
         }
-        final Source source = Source.newBuilder(language, sourceString, "testMisplacedColumnBreakpoint." + language).build();
+        final Source source = Source.newBuilder(language, sourceString, "testMisplacedColumnBreakpoint." + language).buildLiteral();
 
         for (Map.Entry<Integer, int[]> bentry : bps.entrySet()) {
             int bpId = bentry.getKey();
@@ -678,16 +678,29 @@ public final class DebuggerTester implements AutoCloseable {
     }
 
     private void assertBreakpoints(Source source, List<Breakpoint> breakpoints, Set<Breakpoint> breakpointsResolved, List<Breakpoint> breakpointsHit) {
-        try (DebuggerSession session = startSession()) {
+        try (DebuggerSession session = startSession(new SourceElement[0])) {
             for (Breakpoint breakpoint : breakpoints) {
                 session.install(breakpoint);
             }
             startEval(source);
             while (breakpointsHit.size() != breakpoints.size()) {
-                expectSuspended((SuspendedEvent event) -> {
-                    breakpointsHit.addAll(event.getBreakpoints());
-                    event.prepareContinue();
-                });
+                try {
+                    expectSuspended((SuspendedEvent event) -> {
+                        breakpointsHit.addAll(event.getBreakpoints());
+                        event.prepareContinue();
+                    });
+                } catch (Throwable t) {
+                    Set<Breakpoint> notHit = new HashSet<>(breakpoints);
+                    notHit.removeAll(breakpointsHit);
+                    for (Breakpoint b : notHit) {
+                        err("Not hit " + b + ": " + b.getLocationDescription());
+                    }
+                    err("---");
+                    for (Breakpoint b : breakpointsHit) {
+                        err("Hit     " + b + ": " + b.getLocationDescription());
+                    }
+                    throw t;
+                }
             }
             expectDone();
         }
@@ -761,6 +774,9 @@ public final class DebuggerTester implements AutoCloseable {
         trace("Put event " + this + ": " + Thread.currentThread());
         if (event instanceof SuspendedEvent) {
             try {
+                if (handler == null) {
+                    throw new AssertionError("Expected done but got event " + event);
+                }
                 handler.onSuspend((SuspendedEvent) event);
             } catch (Throwable e) {
                 newEvent.add(e);

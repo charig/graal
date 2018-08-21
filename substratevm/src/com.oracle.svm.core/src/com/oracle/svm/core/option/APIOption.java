@@ -4,7 +4,9 @@
  *
  * This code is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.
+ * published by the Free Software Foundation.  Oracle designates this
+ * particular file as subject to the "Classpath" exception as provided
+ * by Oracle in the LICENSE file that accompanied this code.
  *
  * This code is distributed in the hope that it will be useful, but WITHOUT
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
@@ -23,6 +25,7 @@
 package com.oracle.svm.core.option;
 
 import java.lang.annotation.ElementType;
+import java.lang.annotation.Repeatable;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
@@ -31,15 +34,41 @@ import java.lang.annotation.Target;
  * If an {@link org.graalvm.compiler.options.Option} is additionally annotated with
  * {@link APIOption} it will be exposed as native-image option with the given name.
  */
+@Repeatable(APIOption.List.class)
 @Retention(RetentionPolicy.RUNTIME)
-@Target(ElementType.FIELD)
+@Target({ElementType.FIELD})
 public @interface APIOption {
+
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target({ElementType.FIELD})
+    @interface List {
+        APIOption[] value();
+    }
+
     /**
      * The name of the option when exposed as native-image option.
      */
     String name();
 
+    /**
+     * Provide a custom help message for the option.
+     */
+    String customHelp() default "";
+
     APIOptionKind kind() default APIOptionKind.Default;
+
+    /**
+     * The value that will be passed to a non-boolean option when no {@code =} is specified.
+     * <p>
+     * By default {@code --option} form is equivalent to {@code --option=} (it passes empty string).
+     */
+    String[] defaultValue() default {};
+
+    /**
+     * If a {@code fixedValue} is provided the {@link APIOption} will not accept custom option
+     * values and instead always use the specified value.
+     */
+    String[] fixedValue() default {};
 
     /**
      * APIOptionKind can be used to customize how an {@link APIOption} gets rewritten to its
