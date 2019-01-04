@@ -2,25 +2,41 @@
  * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.api.debug;
 
@@ -51,7 +67,7 @@ public final class DebugException extends RuntimeException {
     private static final long serialVersionUID = 5017970176581546348L;
     private static final String CAUSE_CAPTION = "Caused by: ";
 
-    private final Debugger debugger;
+    private final DebuggerSession session;
     private final Throwable exception; // the exception, or null when only a message is given
     private final LanguageInfo preferredLanguage; // the preferred language, or null
     private final Node throwLocation;         // node which intercepted the exception, or null
@@ -61,31 +77,32 @@ public final class DebugException extends RuntimeException {
     private List<DebugStackTraceElement> debugStackTrace;
     private StackTraceElement[] javaLikeStackTrace;
 
-    DebugException(Debugger debugger, String message, Node throwLocation, boolean isCatchNodeComputed, CatchLocation catchLocation) {
+    DebugException(DebuggerSession session, String message, Node throwLocation, boolean isCatchNodeComputed, CatchLocation catchLocation) {
         super(message);
-        this.debugger = debugger;
+        this.session = session;
         this.exception = null;
         this.preferredLanguage = null;
         this.throwLocation = throwLocation;
         this.isCatchNodeComputed = isCatchNodeComputed;
-        this.catchLocation = catchLocation;
+        this.catchLocation = catchLocation != null ? catchLocation.cloneFor(session) : null;
         // we need to materialize the stack for the case that this exception is printed
         super.setStackTrace(getStackTrace());
     }
 
-    DebugException(Debugger debugger, Throwable exception, LanguageInfo preferredLanguage, Node throwLocation, boolean isCatchNodeComputed, CatchLocation catchLocation) {
+    DebugException(DebuggerSession session, Throwable exception, LanguageInfo preferredLanguage, Node throwLocation, boolean isCatchNodeComputed, CatchLocation catchLocation) {
         super(exception.getLocalizedMessage());
-        this.debugger = debugger;
+        this.session = session;
         this.exception = exception;
         this.preferredLanguage = preferredLanguage;
         this.throwLocation = throwLocation;
         this.isCatchNodeComputed = isCatchNodeComputed;
-        this.catchLocation = catchLocation;
+        this.catchLocation = catchLocation != null ? catchLocation.cloneFor(session) : null;
         // we need to materialize the stack for the case that this exception is printed
         super.setStackTrace(getStackTrace());
     }
 
     void setSuspendedEvent(SuspendedEvent suspendedEvent) {
+        assert session == suspendedEvent.getSession();
         if (catchLocation != null) {
             catchLocation.setSuspendedEvent(suspendedEvent);
         }
@@ -159,7 +176,7 @@ public final class DebugException extends RuntimeException {
                     TruffleStackTraceElement tframe = stackTrace.get(i);
                     RootNode root = tframe.getTarget().getRootNode();
                     if (root.getLanguageInfo() != null) {
-                        debugStack.add(new DebugStackTraceElement(debugger, tframe));
+                        debugStack.add(new DebugStackTraceElement(session, tframe));
                     }
                 }
                 debugStackTrace = Collections.unmodifiableList(debugStack);
@@ -177,7 +194,7 @@ public final class DebugException extends RuntimeException {
      */
     @Override
     public void printStackTrace() {
-        printStackTrace(new PrintStream(debugger.getEnv().err()));
+        printStackTrace(new PrintStream(session.getDebugger().getEnv().err()));
     }
 
     /**
@@ -238,7 +255,7 @@ public final class DebugException extends RuntimeException {
                 language = throwRoot.getLanguageInfo();
             }
         }
-        return new DebugValue.HeapValue(debugger, language, null, obj);
+        return new DebugValue.HeapValue(session, language, null, obj);
     }
 
     /**
@@ -273,9 +290,10 @@ public final class DebugException extends RuntimeException {
             synchronized (this) {
                 if (!isCatchNodeComputed) {
                     if (exception instanceof TruffleException) {
-                        catchLocation = BreakpointExceptionFilter.getCatchNode(debugger, throwLocation, exception);
+                        catchLocation = BreakpointExceptionFilter.getCatchNode(session.getDebugger(), throwLocation, exception);
                         if (catchLocation != null) {
                             catchLocation.setSuspendedEvent(suspendedEvent);
+                            catchLocation = catchLocation.cloneFor(session);
                         }
                     }
                     isCatchNodeComputed = true;
@@ -293,12 +311,18 @@ public final class DebugException extends RuntimeException {
      */
     public static final class CatchLocation {
 
+        private final DebuggerSession session;
         private final SourceSection section;
         private final FrameInstance frameInstance;
         private final int depth;
         private DebugStackFrame frame;
 
         CatchLocation(SourceSection section, FrameInstance frameInstance, int depth) {
+            this(null, section, frameInstance, depth);
+        }
+
+        private CatchLocation(DebuggerSession session, SourceSection section, FrameInstance frameInstance, int depth) {
+            this.session = session;
             this.section = section;
             this.frameInstance = frameInstance;
             this.depth = depth;
@@ -309,7 +333,7 @@ public final class DebugException extends RuntimeException {
          * @since 1.0
          */
         public SourceSection getSourceSection() {
-            return section;
+            return session.resolveSection(section);
         }
 
         /**
@@ -321,7 +345,18 @@ public final class DebugException extends RuntimeException {
         }
 
         void setSuspendedEvent(SuspendedEvent suspendedEvent) {
+            assert session == null || session == suspendedEvent.getSession();
             frame = new DebugStackFrame(suspendedEvent, depth == 0 ? null : frameInstance, depth);
+        }
+
+        private CatchLocation cloneFor(DebuggerSession ds) {
+            assert this.session == null;
+            CatchLocation clon = new CatchLocation(ds, section, frameInstance, depth);
+            if (frame != null) {
+                assert ds == frame.event.getSession();
+                clon.frame = frame;
+            }
+            return clon;
         }
     }
 }

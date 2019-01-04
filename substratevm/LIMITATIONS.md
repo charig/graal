@@ -20,6 +20,7 @@ Substrate VM does not support all features of Java to keep the implementation sm
 | [Identity Hash Code](#identity-hash-code) | Supported|
 | [Security Manager](#security-manager) | Not supported|
 | [JVMTI, JMX, other native VM interfaces](#jvmti-jmx-other-native-vm-interfaces) | Not supported|
+| [JCA Security Services](#jca-security-services) | Supported|
 
 
 Dynamic Class Loading / Unloading
@@ -141,8 +142,6 @@ What: The package `java.lang.ref` defines the base class `Reference`, as well as
 
 We have our own Feeble References (exposed as `java.lang.ref.Reference`) similar to Java's weak references. However, we do not distinguish between weak, soft, and phantom references.
 
-We do not support `Reference.enqueue()` or `Reference.isEnqueued()`.
-
 
 Threads
 -------
@@ -185,3 +184,12 @@ JVMTI, JMX, other native VM interfaces
 What: Management and debugging interfaces that Java offers.
 
 These interfaces require access to Java bytecodes, which are no longer available at run time. They also allow dynamic instrumentation of bytecodes and interception of VM events.
+
+JCA Security Services
+----------------
+
+**Support Status: Supported**
+
+What: Java Cryptography Architecture (JCA) and all the corresponding cryptographic communication libraries
+
+The JCA security services must be enabled using the `--enable-all-security-services` option. They require a custom configuration on Substrate VM since the JCA framework relies on reflection to achieve algorithm extensibility. For more details, read our [documentation on security services.](JCA-SECURITY-SERVICES.md).

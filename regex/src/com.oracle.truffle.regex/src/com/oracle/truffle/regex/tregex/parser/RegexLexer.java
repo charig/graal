@@ -32,7 +32,6 @@ import com.oracle.truffle.regex.chardata.CodePointRange;
 import com.oracle.truffle.regex.chardata.CodePointSet;
 import com.oracle.truffle.regex.chardata.Constants;
 import com.oracle.truffle.regex.chardata.UnicodeCharacterProperties;
-import com.oracle.truffle.regex.tregex.util.DebugUtil;
 import com.oracle.truffle.regex.util.CompilationFinalBitSet;
 
 import java.math.BigInteger;
@@ -59,10 +58,10 @@ public final class RegexLexer {
     private boolean identifiedAllGroups = false;
     private Map<String, Integer> namedCaptureGroups = null;
 
-    public RegexLexer(RegexSource source, RegexOptions options) {
+    public RegexLexer(RegexSource source, RegexFlags flags, RegexOptions options) {
         this.source = source;
         this.pattern = source.getPattern();
-        this.flags = source.getFlags();
+        this.flags = flags;
         this.options = options;
     }
 
@@ -88,7 +87,7 @@ public final class RegexLexer {
      *            {@link RegexSource#getPattern()}.
      */
     private void setSourceSection(Token t, int startIndex, int endIndex) {
-        if (DebugUtil.DEBUG) {
+        if (options.isDumpAutomata()) {
             // RegexSource#getSource() prepends a slash ('/') to the pattern, so we have to add an
             // offset of 1 here.
             t.setSourceSection(source.getSource().createSection(startIndex + 1, endIndex - startIndex));
@@ -220,7 +219,8 @@ public final class RegexLexer {
 
     private Token charClass(CodePointSet codePointSet, boolean invert) {
         CodePointSet processedSet = codePointSet;
-        processedSet = flags.isIgnoreCase() ? CaseFoldTable.applyCaseFold(processedSet, flags.isUnicode()) : processedSet;
+        CaseFoldTable.CaseFoldingAlgorithm caseFolding = flags.isUnicode() ? CaseFoldTable.CaseFoldingAlgorithm.ECMAScriptUnicode : CaseFoldTable.CaseFoldingAlgorithm.ECMAScriptNonUnicode;
+        processedSet = flags.isIgnoreCase() ? CaseFoldTable.applyCaseFold(processedSet, caseFolding) : processedSet;
         processedSet = invert ? processedSet.createInverse() : processedSet;
         return Token.createCharClass(processedSet);
     }
@@ -804,6 +804,6 @@ public final class RegexLexer {
     }
 
     private RegexSyntaxException syntaxError(String msg) {
-        return new RegexSyntaxException(pattern, flags, msg);
+        return new RegexSyntaxException(pattern, source.getFlags(), msg);
     }
 }

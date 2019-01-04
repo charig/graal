@@ -204,6 +204,9 @@ public class NativeImageGeneratorRunner implements ImageBuildTask {
                                 "Use '" + SubstrateOptionsParser.commandArgument(NativeImageOptions.Name, "<output-file>") + "'.");
             }
 
+            totalTimer.setPrefix(imageName);
+            classlistTimer.setPrefix(imageName);
+
             // print the time here to avoid interactions with flags processing
             classlistTimer.print();
 
@@ -284,19 +287,19 @@ public class NativeImageGeneratorRunner implements ImageBuildTask {
             e.getReason().ifPresent(NativeImageGeneratorRunner::info);
             return 0;
         } catch (UserException e) {
-            e.getMessages().iterator().forEachRemaining(NativeImageGeneratorRunner::reportUserError);
+            reportUserError(e);
             return -1;
         } catch (AnalysisError e) {
-            NativeImageGeneratorRunner.reportUserError(e.getMessage());
+            reportUserError(e);
             return -1;
         } catch (ParallelExecutionException pee) {
             boolean hasUserError = false;
             for (Throwable exception : pee.getExceptions()) {
                 if (exception instanceof UserException) {
-                    ((UserException) exception).getMessages().iterator().forEachRemaining(NativeImageGeneratorRunner::reportUserError);
+                    reportUserError(exception);
                     hasUserError = true;
                 } else if (exception instanceof AnalysisError) {
-                    NativeImageGeneratorRunner.reportUserError(exception.getMessage());
+                    reportUserError(exception);
                     hasUserError = true;
                 }
             }
@@ -314,6 +317,8 @@ public class NativeImageGeneratorRunner implements ImageBuildTask {
         } catch (Throwable e) {
             NativeImageGeneratorRunner.reportFatalError(e);
             return -1;
+        } finally {
+            ImageSingletonsSupportImpl.HostedManagement.clearInThread();
         }
         totalTimer.print();
         return 0;
@@ -356,6 +361,25 @@ public class NativeImageGeneratorRunner implements ImageBuildTask {
      */
     public static void reportUserError(String msg) {
         System.err.println("error: " + msg);
+    }
+
+    /**
+     * Function for reporting all fatal errors in SVM.
+     *
+     * @param e error message that is printed.
+     */
+    public static void reportUserError(Throwable e) {
+        if (e instanceof UserException) {
+            UserException ue = (UserException) e;
+            for (String message : ue.getMessages()) {
+                reportUserError(message);
+            }
+        } else {
+            reportUserError(e.getMessage());
+        }
+        if (NativeImageOptions.ReportExceptionStackTraces.getValue()) {
+            e.printStackTrace();
+        }
     }
 
     /**

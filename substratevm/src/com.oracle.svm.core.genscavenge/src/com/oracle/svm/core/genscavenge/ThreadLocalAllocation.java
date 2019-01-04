@@ -57,6 +57,7 @@ import com.oracle.svm.core.thread.VMThreads;
 import com.oracle.svm.core.threadlocal.FastThreadLocalBytes;
 import com.oracle.svm.core.threadlocal.FastThreadLocalFactory;
 import com.oracle.svm.core.threadlocal.FastThreadLocalWord;
+import com.oracle.svm.core.util.VMError;
 
 /**
  * Bump-pointer allocation from thread-local top and end Pointers.
@@ -139,7 +140,14 @@ public final class ThreadLocalAllocation {
         final Object result = slowPathNewInstanceWithoutAllocating(hub);
         /* Allow the collector to do stuff now that allocation, etc., is allowed. */
         HeapImpl.getHeapImpl().getGCImpl().possibleCollectionEpilogue(gcEpoch);
+        runSlowPathHooks();
         return result;
+    }
+
+    /** Use the end of slow-path allocation as a place to run periodic hook code. */
+    private static void runSlowPathHooks() {
+        /* Check if the physical memory size has changed. */
+        HeapPolicy.samplePhysicalMemorySize();
     }
 
     @RestrictHeapAccess(access = RestrictHeapAccess.Access.NO_ALLOCATION, reason = "Must not allocate in the implementation of allocation.")
@@ -151,10 +159,10 @@ public final class ThreadLocalAllocation {
     static Object allocateNewInstance(DynamicHub hub, ThreadLocalAllocation.Descriptor tlab, boolean rememberedSet) {
         DeoptTester.disableDeoptTesting();
 
-        log().string("[ThreadLocalAllocation.allocateNewInstance: ").string(hub.asClass().getName()).string(" in tlab ").hex(tlab).newline();
+        log().string("[ThreadLocalAllocation.allocateNewInstance: ").string(DynamicHub.toClass(hub).getName()).string(" in tlab ").hex(tlab).newline();
 
         // Slow-path check if allocation is disallowed.
-        HeapImpl.exitIfAllocationDisallowed("ThreadLocalAllocation.allocateNewInstance", hub.asClass().getName());
+        HeapImpl.exitIfAllocationDisallowed("ThreadLocalAllocation.allocateNewInstance", DynamicHub.toClass(hub).getName());
         // Policy: Possibly collect before this allocation.
         HeapImpl.getHeapImpl().getHeapPolicy().getCollectOnAllocationPolicy().maybeCauseCollection();
 
@@ -186,7 +194,7 @@ public final class ThreadLocalAllocation {
         assert memory.isNonNull();
 
         /* Install the DynamicHub and zero the fields. */
-        return KnownIntrinsics.formatObject(memory, hub.asClass(), rememberedSet);
+        return KnownIntrinsics.formatObject(memory, DynamicHub.toClass(hub), rememberedSet);
     }
 
     /** Slow path of array allocation snippet. */
@@ -206,6 +214,7 @@ public final class ThreadLocalAllocation {
         final Object result = slowPathNewArrayWithoutAllocating(hub, length);
         /* Allow the collector to do stuff now that allocation, etc., is allowed. */
         HeapImpl.getHeapImpl().getGCImpl().possibleCollectionEpilogue(gcEpoch);
+        runSlowPathHooks();
         return result;
     }
 
@@ -218,10 +227,10 @@ public final class ThreadLocalAllocation {
     static Object allocateNewArray(DynamicHub hub, int length, ThreadLocalAllocation.Descriptor tlab, boolean rememberedSet) {
         DeoptTester.disableDeoptTesting();
 
-        log().string("[ThreadLocalAllocation.allocateNewArray: ").string(hub.asClass().getName()).string("  length ").signed(length).string("  in tlab ").hex(tlab).newline();
+        log().string("[ThreadLocalAllocation.allocateNewArray: ").string(DynamicHub.toClass(hub).getName()).string("  length ").signed(length).string("  in tlab ").hex(tlab).newline();
 
         // Slow-path check if allocation is disallowed.
-        HeapImpl.exitIfAllocationDisallowed("Heap.allocateNewArray", hub.asClass().getName());
+        HeapImpl.exitIfAllocationDisallowed("Heap.allocateNewArray", DynamicHub.toClass(hub).getName());
         // Policy: Possibly collect before this allocation.
         HeapImpl.getHeapImpl().getHeapPolicy().getCollectOnAllocationPolicy().maybeCauseCollection();
 
@@ -261,7 +270,7 @@ public final class ThreadLocalAllocation {
         Pointer memory = allocateMemory(tlab, size);
         assert memory.isNonNull();
         /* Install the DynamicHub and length, and zero the elements. */
-        return KnownIntrinsics.formatArray(memory, hub.asClass(), length, rememberedSet, false);
+        return KnownIntrinsics.formatArray(memory, DynamicHub.toClass(hub), length, rememberedSet, false);
     }
 
     @Uninterruptible(reason = "Holds uninitialized memory, modifies TLAB")
@@ -275,7 +284,7 @@ public final class ThreadLocalAllocation {
         assert memory.isNonNull();
 
         /* Install the DynamicHub and length, and zero the elements. */
-        return KnownIntrinsics.formatArray(memory, hub.asClass(), length, rememberedSet, true);
+        return KnownIntrinsics.formatArray(memory, DynamicHub.toClass(hub), length, rememberedSet, true);
     }
 
     /**
@@ -333,6 +342,27 @@ public final class ThreadLocalAllocation {
             HeapChunkProvider.get().consumeAlignedChunk(alignedChunk);
         }
         retireToSpace(pinnedTLAB.getAddress(vmThread), HeapImpl.getHeapImpl().getOldGeneration().getPinnedFromSpace());
+    }
+
+    /** Return all allocated virtual memory chunks to HeapChunkProvider. */
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    static void tearDown() {
+        final IsolateThread thread;
+        if (SubstrateOptions.MultiThreaded.getValue()) {
+            thread = VMThreads.firstThread();
+            VMError.guarantee(VMThreads.nextThread(thread).isNull(), "Other isolate threads are still active");
+        } else {
+            thread = WordFactory.nullPointer();
+        }
+        freeHeapChunks(regularTLAB.getAddress(thread));
+        freeHeapChunks(pinnedTLAB.getAddress(thread));
+        HeapChunkProvider.freeAlignedChunkList(freeList.get());
+    }
+
+    @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
+    private static void freeHeapChunks(Descriptor tlab) {
+        HeapChunkProvider.freeAlignedChunkList(tlab.getAlignedChunk());
+        HeapChunkProvider.freeUnalignedChunkList(tlab.getUnalignedChunk());
     }
 
     public static void suspendThreadLocalAllocation() {

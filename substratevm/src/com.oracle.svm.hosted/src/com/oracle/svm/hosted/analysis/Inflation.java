@@ -30,6 +30,7 @@ import static jdk.vm.ci.common.JVMCIError.shouldNotReachHere;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.AnnotatedType;
+import java.lang.reflect.MalformedParameterizedTypeException;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
 import java.lang.reflect.TypeVariable;
@@ -44,6 +45,7 @@ import java.util.Set;
 import java.util.concurrent.ForkJoinPool;
 import java.util.regex.Pattern;
 
+import org.graalvm.compiler.core.common.SuppressSVMWarnings;
 import org.graalvm.compiler.graph.NodeSourcePosition;
 import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.word.WordBase;
@@ -136,32 +138,51 @@ public class Inflation extends BigBang {
     private void checkType(AnalysisType type) {
         SVMHost svmHost = (SVMHost) hostVM;
 
+        DynamicHub hub = svmHost.dynamicHub(type);
+        if (hub.getGenericInfo() == null) {
+            fillGenericInfo(type, hub);
+        }
+        if (hub.getAnnotatedSuperInfo() == null) {
+            fillAnnotatedSuperInfo(type, hub);
+        }
+
         if (type.getJavaKind() == JavaKind.Object) {
             if (type.isArray() && (type.isInstantiated() || type.isInTypeCheck())) {
-                svmHost.dynamicHub(type).getComponentHub().setArrayHub(svmHost.dynamicHub(type));
+                hub.getComponentHub().setArrayHub(hub);
             }
 
             try {
                 AnalysisType enclosingType = type.getEnclosingType();
                 if (enclosingType != null) {
-                    svmHost.dynamicHub(type).setEnclosingClass(svmHost.dynamicHub(enclosingType));
+                    hub.setEnclosingClass(svmHost.dynamicHub(enclosingType));
                 }
             } catch (UnsupportedFeatureException ex) {
                 getUnsupportedFeatures().addMessage(type.toJavaName(true), null, ex.getMessage(), null, ex);
             }
 
-            fillGenericInfo(type);
-            fillInterfaces(type);
+            if (hub.getInterfacesEncoding() == null) {
+                fillInterfaces(type, hub);
+            }
 
             /*
              * Support for Java annotations.
              */
-            svmHost.dynamicHub(type).setAnnotationsEncoding(encodeAnnotations(metaAccess, type.getAnnotations(), svmHost.dynamicHub(type).getAnnotationsEncoding()));
+            try {
+                /*
+                 * Get the annotations from the wrapped type since AnalysisType.getAnnotations()
+                 * defends against JDK-7183985 and we want to get the original behavior.
+                 */
+                Annotation[] annotations = type.getWrappedWithoutResolve().getAnnotations();
+                hub.setAnnotationsEncoding(encodeAnnotations(metaAccess, annotations, hub.getAnnotationsEncoding()));
+            } catch (ArrayStoreException e) {
+                /* If we hit JDK-7183985 just encode the exception. */
+                hub.setAnnotationsEncoding(e);
+            }
 
             /*
              * Support for Java enumerations.
              */
-            if (type.getSuperclass() != null && type.getSuperclass().equals(metaAccess.lookupJavaType(Enum.class)) && svmHost.dynamicHub(type).getEnumConstantsShared() == null) {
+            if (type.getSuperclass() != null && type.getSuperclass().equals(metaAccess.lookupJavaType(Enum.class)) && hub.getEnumConstantsShared() == null) {
                 /*
                  * We want to retrieve the enum constant array that is maintained as a private
                  * static field in the enumeration class. We do not want a copy because that would
@@ -196,7 +217,7 @@ public class Inflation extends BigBang {
                     enumConstants = (Enum[]) SubstrateObjectConstant.asObject(getConstantReflectionProvider().readFieldValue(found, null));
                     assert enumConstants != null;
                 }
-                svmHost.dynamicHub(type).setEnumConstants(enumConstants);
+                hub.setEnumConstants(enumConstants);
             }
         }
     }
@@ -268,32 +289,80 @@ public class Inflation extends BigBang {
         }
     }
 
-    private void fillGenericInfo(AnalysisType type) {
-        SVMHost svmHost = (SVMHost) hostVM;
-        DynamicHub hub = svmHost.dynamicHub(type);
-
+    private void fillGenericInfo(AnalysisType type, DynamicHub hub) {
         Class<?> javaClass = type.getJavaClass();
 
         TypeVariable<?>[] typeParameters = javaClass.getTypeParameters();
-        Type[] genericInterfaces = Arrays.stream(javaClass.getGenericInterfaces()).filter(this::filterGenericInterfaces).toArray(Type[]::new);
-        Type[] cachedGenericInterfaces = genericInterfacesMap.computeIfAbsent(new GenericInterfacesEncodingKey(genericInterfaces), k -> genericInterfaces);
-        Type genericSuperClass = javaClass.getGenericSuperclass();
-        hub.setGenericInfo(GenericInfo.factory(typeParameters, cachedGenericInterfaces, genericSuperClass));
 
-        AnnotatedType annotatedSuperclass = javaClass.getAnnotatedSuperclass();
-        AnnotatedType[] annotatedInterfaces = Arrays.stream(javaClass.getAnnotatedInterfaces())
-                        .filter(ai -> filterGenericInterfaces(ai.getType())).toArray(AnnotatedType[]::new);
+        Type[] allGenericInterfaces;
+        try {
+            allGenericInterfaces = javaClass.getGenericInterfaces();
+        } catch (MalformedParameterizedTypeException | TypeNotPresentException t) {
+            /*
+             * Loading generic interfaces can fail due to missing types. Ignore the exception and
+             * return an empty array.
+             */
+            allGenericInterfaces = new Type[0];
+        }
+
+        Type[] genericInterfaces = Arrays.stream(allGenericInterfaces).filter(this::isTypeAllowed).toArray(Type[]::new);
+        Type[] cachedGenericInterfaces = genericInterfacesMap.computeIfAbsent(new GenericInterfacesEncodingKey(genericInterfaces), k -> genericInterfaces);
+        Type genericSuperClass;
+        try {
+            genericSuperClass = javaClass.getGenericSuperclass();
+        } catch (MalformedParameterizedTypeException | TypeNotPresentException t) {
+            /*
+             * Loading the generic super class can fail due to missing types. Ignore the exception
+             * and return null.
+             */
+            genericSuperClass = null;
+        }
+        if (!isTypeAllowed(genericSuperClass)) {
+            genericSuperClass = null;
+        }
+        hub.setGenericInfo(GenericInfo.factory(typeParameters, cachedGenericInterfaces, genericSuperClass));
+    }
+
+    private void fillAnnotatedSuperInfo(AnalysisType type, DynamicHub hub) {
+        Class<?> javaClass = type.getJavaClass();
+
+        AnnotatedType annotatedSuperclass;
+        try {
+            annotatedSuperclass = javaClass.getAnnotatedSuperclass();
+        } catch (MalformedParameterizedTypeException | TypeNotPresentException t) {
+            /*
+             * Loading the annotated super class can fail due to missing types. Ignore the exception
+             * and return null.
+             */
+            annotatedSuperclass = null;
+        }
+        if (annotatedSuperclass != null && !isTypeAllowed(annotatedSuperclass.getType())) {
+            annotatedSuperclass = null;
+        }
+
+        AnnotatedType[] allAnnotatedInterfaces;
+        try {
+            allAnnotatedInterfaces = javaClass.getAnnotatedInterfaces();
+        } catch (MalformedParameterizedTypeException | TypeNotPresentException t) {
+            /*
+             * Loading annotated interfaces can fail due to missing types. Ignore the exception and
+             * return an empty array.
+             */
+            allAnnotatedInterfaces = new AnnotatedType[0];
+        }
+
+        AnnotatedType[] annotatedInterfaces = Arrays.stream(allAnnotatedInterfaces)
+                        .filter(ai -> isTypeAllowed(ai.getType())).toArray(AnnotatedType[]::new);
         AnnotatedType[] cachedAnnotatedInterfaces = annotatedInterfacesMap.computeIfAbsent(
                         new AnnotatedInterfacesEncodingKey(annotatedInterfaces), k -> annotatedInterfaces);
         hub.setAnnotatedSuperInfo(AnnotatedSuperInfo.factory(annotatedSuperclass, cachedAnnotatedInterfaces));
     }
 
-    private boolean filterGenericInterfaces(Type t) {
+    private boolean isTypeAllowed(Type t) {
         if (t instanceof Class) {
             Optional<? extends ResolvedJavaType> resolved = metaAccess.optionalLookupJavaType((Class<?>) t);
             return resolved.isPresent() && universe.hostVM().platformSupported(resolved.get());
         }
-
         return true;
     }
 
@@ -327,9 +396,8 @@ public class Inflation extends BigBang {
     /**
      * Fill array returned by Class.getInterfaces().
      */
-    private void fillInterfaces(AnalysisType type) {
+    private void fillInterfaces(AnalysisType type, DynamicHub hub) {
         SVMHost svmHost = (SVMHost) hostVM;
-        DynamicHub hub = svmHost.dynamicHub(type);
 
         AnalysisType[] aInterfaces = type.getInterfaces();
         if (aInterfaces.length == 0) {
@@ -572,6 +640,20 @@ public class Inflation extends BigBang {
         if (illegalCalleesPattern.matcher(calleeName).find()) {
             String callerName = caller.format("%H.%n");
             if (targetCallersPattern.matcher(callerName).find()) {
+                SuppressSVMWarnings suppress = caller.getAnnotation(SuppressSVMWarnings.class);
+                AnalysisType callerType = caller.getDeclaringClass();
+                while (suppress == null && callerType != null) {
+                    suppress = callerType.getAnnotation(SuppressSVMWarnings.class);
+                    callerType = callerType.getEnclosingType();
+                }
+                if (suppress != null) {
+                    String[] reasons = suppress.value();
+                    for (String r : reasons) {
+                        if (r.equals("AllowUseOfStreamAPI")) {
+                            return true;
+                        }
+                    }
+                }
                 String message = "Illegal: Graal/Truffle use of Stream API: " + calleeName;
                 int bci = srcPosition.getBCI();
                 String trace = caller.asStackTraceElement(bci).toString();

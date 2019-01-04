@@ -37,13 +37,14 @@ import org.graalvm.compiler.code.CompilationResult;
 import org.graalvm.compiler.core.common.NumUtil;
 import org.graalvm.compiler.debug.DebugContext;
 import org.graalvm.compiler.debug.Indent;
+import org.graalvm.compiler.truffle.common.TruffleCompiler;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.c.function.CodePointer;
+import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
 import org.graalvm.word.WordFactory;
 
-import com.oracle.svm.core.SubstrateUtil;
 import com.oracle.svm.core.annotate.Uninterruptible;
 import com.oracle.svm.core.code.CodeInfoEncoder;
 import com.oracle.svm.core.code.CodeInfoTable;
@@ -54,9 +55,9 @@ import com.oracle.svm.core.code.InstalledCodeObserverSupport;
 import com.oracle.svm.core.code.RuntimeMethodInfo;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.deopt.SubstrateInstalledCode;
+import com.oracle.svm.core.graal.code.InstructionPatcher;
+import com.oracle.svm.core.graal.code.InstructionPatcher.PatchData;
 import com.oracle.svm.core.graal.code.SubstrateCompilationResult;
-import com.oracle.svm.core.graal.code.amd64.AMD64InstructionPatcher;
-import com.oracle.svm.core.graal.code.amd64.AMD64InstructionPatcher.PatchData;
 import com.oracle.svm.core.heap.Heap;
 import com.oracle.svm.core.heap.NoAllocationVerifier;
 import com.oracle.svm.core.heap.ObjectReferenceVisitor;
@@ -96,6 +97,7 @@ public class InstalledCodeBuilder {
 
     private final SharedRuntimeMethod method;
     private final SubstrateInstalledCode installedCode;
+    private final int tier;
     private final Map<SharedMethod, InstalledCodeBuilder> allInstalledCode;
     protected Pointer code;
     private final int codeSize;
@@ -169,6 +171,7 @@ public class InstalledCodeBuilder {
                     boolean testTrampolineJumps) {
         this.method = method;
         this.compilation = (SubstrateCompilationResult) compilation;
+        this.tier = compilation.getName().endsWith(TruffleCompiler.FIRST_TIER_COMPILATION_SUFFIX) ? TruffleCompiler.FIRST_TIER_INDEX : TruffleCompiler.LAST_TIER_INDEX;
         this.installedCode = installedCode;
         this.allInstalledCode = allInstalledCode;
         this.testTrampolineJumps = testTrampolineJumps;
@@ -282,7 +285,7 @@ public class InstalledCodeBuilder {
          */
         ObjectConstantsHolder objectConstants = new ObjectConstantsHolder(compilation);
 
-        AMD64InstructionPatcher patcher = new AMD64InstructionPatcher(compilation);
+        InstructionPatcher patcher = new InstructionPatcher(compilation);
         patchData(patcher, objectConstants);
 
         int updatedCodeSize = patchCalls(patcher);
@@ -294,7 +297,7 @@ public class InstalledCodeBuilder {
         }
 
         /* Write primitive constants to the buffer, record object constants with offsets */
-        ByteBuffer constantsBuffer = SubstrateUtil.wrapAsByteBuffer(code.add(constantsOffset), compilation.getDataSection().getSectionSize());
+        ByteBuffer constantsBuffer = CTypeConversion.asByteBuffer(code.add(constantsOffset), compilation.getDataSection().getSectionSize());
         compilation.getDataSection().buildDataSection(constantsBuffer, (position, constant) -> {
             objectConstants.add(constantsOffset + position, (SubstrateObjectConstant) constant);
         });
@@ -326,7 +329,7 @@ public class InstalledCodeBuilder {
 
             InstalledCodeObserver.InstalledCodeObserverHandle[] observerHandles = InstalledCodeObserverSupport.installObservers(codeObservers, metaInfoAllocator);
 
-            runtimeMethodInfo.setData((CodePointer) code, WordFactory.unsigned(codeSize), installedCode, constantsWalker, metaInfoAllocator, observerHandles);
+            runtimeMethodInfo.setData((CodePointer) code, WordFactory.unsigned(codeSize), installedCode, tier, constantsWalker, metaInfoAllocator, observerHandles);
         } finally {
             metaInfoAllocator.close();
         }
@@ -335,7 +338,6 @@ public class InstalledCodeBuilder {
         VMOperation.enqueueBlockingSafepoint("Install code", () -> {
             try {
                 CodeInfoTable.getRuntimeCodeCache().addMethod(runtimeMethodInfo);
-
                 /*
                  * This call makes the new code visible, i.e., other threads can start executing it
                  * immediately. So all metadata must be registered at this point.
@@ -376,11 +378,11 @@ public class InstalledCodeBuilder {
         assert codeInfoEncoder.verifyMethod(compilation, 0);
 
         DeoptimizationSourcePositionEncoder sourcePositionEncoder = new DeoptimizationSourcePositionEncoder(metaInfoAllocator);
-        sourcePositionEncoder.encode(compilation.getDeoptimzationSourcePositions());
+        sourcePositionEncoder.encode(compilation.getDeoptimizationSourcePositions());
         sourcePositionEncoder.install(runtimeMethodInfo);
     }
 
-    private void patchData(AMD64InstructionPatcher patcher, ObjectConstantsHolder objectConstants) {
+    private void patchData(InstructionPatcher patcher, ObjectConstantsHolder objectConstants) {
         for (DataPatch dataPatch : compilation.getDataPatches()) {
             if (dataPatch.reference instanceof DataSectionReference) {
                 DataSectionReference ref = (DataSectionReference) dataPatch.reference;
@@ -410,7 +412,7 @@ public class InstalledCodeBuilder {
         }
     }
 
-    private int patchCalls(AMD64InstructionPatcher patcher) {
+    private int patchCalls(InstructionPatcher patcher) {
         /*
          * Patch the direct call instructions. TODO: This is highly x64 specific. Should be
          * rewritten to generic backends.
@@ -489,7 +491,7 @@ public class InstalledCodeBuilder {
         return callTargetStart;
     }
 
-    protected Pointer allocateOSMemory(final UnsignedWord size, final boolean executable) {
+    private static Pointer allocateOSMemory(final UnsignedWord size, final boolean executable) {
         final Log trace = Log.noopLog();
         trace.string("[SubstrateInstalledCode.allocateAlignedMemory:");
         trace.string("  size: ").unsigned(size);
@@ -497,10 +499,13 @@ public class InstalledCodeBuilder {
         final Pointer result = CommittedMemoryProvider.get().allocate(size, CommittedMemoryProvider.UNALIGNED, executable);
         trace.string("  returns: ").hex(result);
         trace.string("]").newline();
+        if (result.isNull()) {
+            throw new OutOfMemoryError();
+        }
         return result;
     }
 
-    protected void freeOSMemory(final Pointer start, final UnsignedWord size) {
+    private static void freeOSMemory(final Pointer start, final UnsignedWord size) {
         final Log trace = Log.noopLog();
         trace.string("[SubstrateInstalledCode.freeOSMemory:");
         trace.string("  start: ").hex(start);

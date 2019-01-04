@@ -28,20 +28,20 @@ import static com.oracle.svm.core.snippets.KnownIntrinsics.readCallerStackPointe
 import static com.oracle.svm.core.snippets.KnownIntrinsics.readReturnAddress;
 
 import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.util.ArrayList;
 import java.util.List;
 
-import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
 
 import org.graalvm.compiler.api.replacements.Fold;
 import org.graalvm.compiler.options.Option;
 import org.graalvm.compiler.word.Word;
+import org.graalvm.nativeimage.CurrentIsolate;
 import org.graalvm.nativeimage.Feature.FeatureAccess;
 import org.graalvm.nativeimage.IsolateThread;
 import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
-import org.graalvm.nativeimage.c.function.CEntryPointContext;
 import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.word.Pointer;
 import org.graalvm.word.UnsignedWord;
@@ -61,6 +61,7 @@ import com.oracle.svm.core.heap.NoAllocationVerifier;
 import com.oracle.svm.core.heap.ObjectReferenceWalker;
 import com.oracle.svm.core.heap.ObjectVisitor;
 import com.oracle.svm.core.hub.LayoutEncoding;
+import com.oracle.svm.core.jdk.RuntimeSupport;
 import com.oracle.svm.core.jdk.SunMiscSupport;
 import com.oracle.svm.core.log.Log;
 import com.oracle.svm.core.option.HostedOptionKey;
@@ -71,6 +72,10 @@ import com.oracle.svm.core.thread.VMOperation;
 import com.oracle.svm.core.thread.VMThreads;
 import com.oracle.svm.core.util.TimeUtils;
 import com.oracle.svm.core.util.VMError;
+
+//Checkstyle: stop
+import sun.management.Util;
+//Checkstyle: resume
 
 public class GCImpl implements GC {
 
@@ -180,6 +185,8 @@ public class GCImpl implements GC {
         this.watchersAfterTimer = new Timer("watchersAfter");
         this.mutatorTimer = new Timer("Mutator");
         this.walkRegisteredMemoryTimer = new Timer("walkRegisteredMemory");
+
+        RuntimeSupport.getRuntimeSupport().addShutdownHook(this::printGCSummary);
     }
 
     /*
@@ -342,7 +349,7 @@ public class GCImpl implements GC {
             verboseGCLog.string("     AlignedChunkSize: ").unsigned(HeapPolicy.getAlignedHeapChunkSize()).newline();
             verboseGCLog.string("  LargeArrayThreshold: ").unsigned(HeapPolicy.getLargeArrayThreshold()).string("]").newline();
             if (HeapOptions.PrintHeapShape.getValue()) {
-                HeapImpl.getHeapImpl().bootImageHeapBoundariesToLog(verboseGCLog);
+                HeapImpl.getHeapImpl().bootImageHeapBoundariesToLog(verboseGCLog).newline();
             }
         }
 
@@ -731,7 +738,7 @@ public class GCImpl implements GC {
                  * (or in native code) so they will each have a JavaFrameAnchor in their VMThread.
                  */
                 for (IsolateThread vmThread = VMThreads.firstThread(); VMThreads.isNonNullThread(vmThread); vmThread = VMThreads.nextThread(vmThread)) {
-                    if (vmThread == CEntryPointContext.getCurrentIsolateThread()) {
+                    if (vmThread == CurrentIsolate.getCurrentThread()) {
                         /*
                          * The current thread is already scanned by code above, so we do not have to
                          * do anything for it here. It might have a JavaFrameAnchor from earlier
@@ -1627,8 +1634,12 @@ public class GCImpl implements GC {
         }
     }
 
-    @Override
-    public void printGCSummary() {
+    /* Invoked by a shutdown hook registered in the GCImpl constructor. */
+    private void printGCSummary() {
+        if (!SubstrateOptions.PrintGCSummary.getValue()) {
+            return;
+        }
+
         final Log log = Log.log();
         final String prefix = "PrintGCSummary: ";
 
@@ -1752,11 +1763,7 @@ final class GarbageCollectorManagementFactory {
 
         @Override
         public ObjectName getObjectName() {
-            try {
-                return new ObjectName("java.lang:type=GarbageCollector,name=young generation scavenger");
-            } catch (MalformedObjectNameException mone) {
-                return null;
-            }
+            return Util.newObjectName(ManagementFactory.GARBAGE_COLLECTOR_MXBEAN_DOMAIN_TYPE, getName());
         }
     }
 
@@ -1797,11 +1804,7 @@ final class GarbageCollectorManagementFactory {
 
         @Override
         public ObjectName getObjectName() {
-            try {
-                return new ObjectName("java.lang:type=GarbageCollector,name=complete scavenger");
-            } catch (MalformedObjectNameException mone) {
-                return null;
-            }
+            return Util.newObjectName(ManagementFactory.GARBAGE_COLLECTOR_MXBEAN_DOMAIN_TYPE, getName());
         }
     }
 }

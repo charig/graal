@@ -48,9 +48,11 @@ import org.graalvm.compiler.nodes.EncodedGraph;
 import org.graalvm.compiler.nodes.GraphEncoder;
 import org.graalvm.compiler.nodes.StructuredGraph;
 import org.graalvm.compiler.nodes.ValueNode;
+import org.graalvm.compiler.nodes.graphbuilderconf.GeneratedInvocationPlugin;
 import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration;
 import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderConfiguration.Plugins;
 import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderContext;
+import org.graalvm.compiler.nodes.graphbuilderconf.GraphBuilderPlugin;
 import org.graalvm.compiler.nodes.graphbuilderconf.InlineInvokePlugin;
 import org.graalvm.compiler.nodes.graphbuilderconf.InvocationPlugin;
 import org.graalvm.compiler.nodes.graphbuilderconf.InvocationPlugins;
@@ -104,7 +106,8 @@ public class SubstrateReplacements extends ReplacementsImpl {
         public InlineInfo shouldInlineInvoke(GraphBuilderContext b, ResolvedJavaMethod method, ValueNode[] args) {
             assert b.parsingIntrinsic();
             assert builder != null;
-            if (hasGeneratedInvocationPluginAnnotation(method)) {
+            Class<? extends GraphBuilderPlugin> intrinsifyingPlugin = getIntrinsifyingPlugin(method);
+            if (intrinsifyingPlugin != null && GeneratedInvocationPlugin.class.isAssignableFrom(intrinsifyingPlugin)) {
                 builder.delayedInvocationPluginMethods.add(method);
                 return InlineInfo.DO_NOT_INLINE_NO_EXCEPTION;
             }
@@ -184,11 +187,12 @@ public class SubstrateReplacements extends ReplacementsImpl {
 
         EncodedGraph encodedGraph = new EncodedGraph(snippetEncoding, startOffset, snippetObjects, snippetNodeClasses, null, null, null, false, trackNodeSourcePosition);
         try (DebugContext debug = openDebugContext("SVMSnippet_", method)) {
-            StructuredGraph result = new StructuredGraph.Builder(options, debug).method(method).trackNodeSourcePosition(trackNodeSourcePosition).build();
+            StructuredGraph result = new StructuredGraph.Builder(options, debug).method(method).trackNodeSourcePosition(trackNodeSourcePosition).setIsSubstitution(true).build();
             PEGraphDecoder graphDecoder = new PEGraphDecoder(ConfigurationValues.getTarget().arch, result, providers.getMetaAccess(), providers.getConstantReflection(),
                             providers.getConstantFieldProvider(), providers.getStampProvider(), null, snippetInvocationPlugins, new InlineInvokePlugin[0], parameterPlugin, null, null, null) {
                 @Override
-                protected EncodedGraph lookupEncodedGraph(ResolvedJavaMethod lookupMethod, ResolvedJavaMethod originalMethod, BytecodeProvider intrinsicBytecodeProvider, boolean track) {
+                protected EncodedGraph lookupEncodedGraph(ResolvedJavaMethod lookupMethod, ResolvedJavaMethod originalMethod, BytecodeProvider intrinsicBytecodeProvider,
+                                boolean isSubstitution, boolean track) {
                     if (lookupMethod.equals(method)) {
                         assert !track || encodedGraph.trackNodeSourcePosition();
                         return encodedGraph;
@@ -198,7 +202,7 @@ public class SubstrateReplacements extends ReplacementsImpl {
                 }
             };
 
-            graphDecoder.decode(method, trackNodeSourcePosition);
+            graphDecoder.decode(method, true, trackNodeSourcePosition);
 
             assert result.verify();
             return result;
@@ -210,8 +214,8 @@ public class SubstrateReplacements extends ReplacementsImpl {
      */
     @Platforms(Platform.HOSTED_ONLY.class)
     @Override
-    public void registerSnippet(ResolvedJavaMethod method, boolean trackNodeSourcePosition) {
-        assert method.getAnnotation(Snippet.class) != null : "Snippet must be annotated with @" + Snippet.class.getSimpleName();
+    public void registerSnippet(ResolvedJavaMethod method, ResolvedJavaMethod original, Object receiver, boolean trackNodeSourcePosition) {
+        assert method.getAnnotation(Snippet.class) != null : "Snippet must be annotated with @" + Snippet.class.getSimpleName() + " " + method;
         assert method.hasBytecodes() : "Snippet must not be abstract or native";
         assert builder.graphs.get(method) == null : "snippet registered twice: " + method.getName();
 
@@ -222,7 +226,7 @@ public class SubstrateReplacements extends ReplacementsImpl {
             for (MethodCallTargetNode callTarget : graph.getNodes(MethodCallTargetNode.TYPE)) {
                 ResolvedJavaMethod callee = callTarget.targetMethod();
                 if (!builder.delayedInvocationPluginMethods.contains(callee)) {
-                    throw shouldNotReachHere("method " + callee.getName() + " not inlined in snippet " + method.getName() + " (maybe not final?)");
+                    throw shouldNotReachHere("method " + callee.format("%h.%n") + " not inlined in snippet " + method.format("%h.%n") + " (maybe not final?)");
                 }
             }
 

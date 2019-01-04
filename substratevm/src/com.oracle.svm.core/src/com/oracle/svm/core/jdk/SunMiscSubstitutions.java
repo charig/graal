@@ -54,9 +54,9 @@ import com.oracle.svm.core.snippets.KnownIntrinsics;
 import jdk.vm.ci.code.MemoryBarriers;
 import sun.misc.Unsafe;
 
-@TargetClass(sun.misc.Unsafe.class)
+@TargetClass(classNameProvider = Package_jdk_internal_misc.class, className = "Unsafe")
 @SuppressWarnings({"static-method"})
-final class Target_sun_misc_Unsafe {
+final class Target_Unsafe_Core {
 
     @Substitute
     private long allocateMemory(long bytes) {
@@ -150,11 +150,13 @@ final class Target_sun_misc_Unsafe {
     }
 
     @Substitute
+    boolean shouldBeInitialized(Class<?> c) {
+        return !DynamicHub.fromClass(c).isInitialized();
+    }
+
+    @Substitute
     public void ensureClassInitialized(Class<?> c) {
-        if (c == null) {
-            throw new NullPointerException();
-        }
-        // no-op: all classes that exist in our image must have been initialized
+        DynamicHub.fromClass(c).ensureInitialized();
     }
 }
 

@@ -2,25 +2,41 @@
  * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.api.test.polyglot;
 
@@ -49,6 +65,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.TruffleContext;
 import com.oracle.truffle.api.TruffleLanguage;
@@ -57,6 +74,7 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.ForeignAccess;
 import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.nodes.RootNode;
+import org.graalvm.polyglot.Engine;
 
 public class LoggingTest {
 
@@ -416,29 +434,9 @@ public class LoggingTest {
     }
 
     @Test
-    public void testPolyglotLogHandler() throws IOException {
-        AbstractLoggingLanguage.action = new BiPredicate<LoggingContext, Collection<TruffleLogger>>() {
-            @Override
-            public boolean test(final LoggingContext context, final Collection<TruffleLogger> loggers) {
-                TruffleLogger.getLogger(LoggingLanguageFirst.ID).warning(LoggingLanguageFirst.ID);
-                TruffleLogger.getLogger(LoggingLanguageFirst.ID, "a").warning(LoggingLanguageFirst.ID + "::a");
-                return false;
-            }
-        };
-        final ByteArrayOutputStream out = new ByteArrayOutputStream();
-        try (Context ctx = Context.newBuilder().out(out).build()) {
-            ctx.eval(LoggingLanguageFirst.ID, "");
-        }
-        out.close();
-        final String output = new String(out.toByteArray());
-        final Pattern p = Pattern.compile("\\[(.*)\\]\\sWARNING:\\s(.*)");
-        for (String line : output.split("\n")) {
-            final Matcher m = p.matcher(line);
-            Assert.assertTrue(m.matches());
-            final String loggerName = m.group(1);
-            final String message = m.group(2);
-            Assert.assertEquals(message, loggerName);
-        }
+    public void testPolyglotLogHandler() {
+        CloseableByteArrayOutputStream err = new CloseableByteArrayOutputStream();
+        testLogToStream(Context.newBuilder().err(err), err, false);
     }
 
     @Test
@@ -482,6 +480,183 @@ public class LoggingTest {
         expected = new ArrayList<>();
         expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, Level.FINE, Collections.emptyMap()));
         Assert.assertEquals(expected, contextHandler.getLog());
+    }
+
+    @Test
+    public void testLogToStream() {
+        CloseableByteArrayOutputStream stream = new CloseableByteArrayOutputStream();
+        testLogToStream(Context.newBuilder().logHandler(stream), stream, true);
+        stream = new CloseableByteArrayOutputStream();
+        try (Engine engine = Engine.newBuilder().logHandler(stream).build()) {
+            testLogToStream(Context.newBuilder().engine(engine), stream, false);
+            stream.clear();
+            CloseableByteArrayOutputStream innerStream = new CloseableByteArrayOutputStream();
+            testLogToStream(Context.newBuilder().engine(engine).logHandler(innerStream), innerStream, true);
+            Assert.assertFalse(stream.isClosed());
+            Assert.assertEquals(0, stream.toByteArray().length);
+            testLogToStream(Context.newBuilder().engine(engine), stream, false);
+        }
+        Assert.assertTrue(stream.isClosed());
+    }
+
+    @Test
+    public void testDecreaseLogLevelSingleContext() {
+        Level defaultLevel = Level.INFO;
+        Map<String, Level> setLevelsMap = new HashMap<>();
+        setLevelsMap.put("a", Level.FINEST);
+        setLevelsMap.put("a.a", Level.INFO);
+        Context.Builder builder = Context.newBuilder();
+        for (Map.Entry<String, Level> levelsMapEntry : setLevelsMap.entrySet()) {
+            builder.options(createLoggingOptions(LoggingLanguageFirst.ID, levelsMapEntry.getKey(), levelsMapEntry.getValue().toString()));
+        }
+        TestHandler handler = new TestHandler();
+        try (Context ctx = builder.logHandler(handler).build()) {
+            ctx.eval(LoggingLanguageFirst.ID, "");
+            List<Map.Entry<Level, String>> expected = new ArrayList<>();
+            expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, defaultLevel, setLevelsMap));
+            Assert.assertEquals(expected, handler.getLog());
+        }
+    }
+
+    @Test
+    public void testDecreaseLogLevelMultipleContexts() {
+        Level defaultLevel = Level.INFO;
+        Map<String, Level> setLevelsMap = new HashMap<>();
+        setLevelsMap.put("a", Level.FINEST);
+        setLevelsMap.put("a.a", Level.INFO);
+        Context.Builder builder = Context.newBuilder();
+        for (Map.Entry<String, Level> levelsMapEntry : setLevelsMap.entrySet()) {
+            builder.options(createLoggingOptions(LoggingLanguageFirst.ID, levelsMapEntry.getKey(), levelsMapEntry.getValue().toString()));
+        }
+        TestHandler handler = new TestHandler();
+        try (Context ctx = builder.logHandler(handler).build()) {
+            TestHandler handler2 = new TestHandler();
+            try (Context ctx2 = Context.newBuilder().logHandler(handler2).build()) {
+                ctx.eval(LoggingLanguageFirst.ID, "");
+                ctx2.eval(LoggingLanguageFirst.ID, "");
+                List<Map.Entry<Level, String>> expected = new ArrayList<>();
+                expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, defaultLevel, setLevelsMap));
+                Assert.assertEquals(expected, handler.getLog());
+                expected = new ArrayList<>();
+                expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, defaultLevel, Collections.emptyMap()));
+                Assert.assertEquals(expected, handler2.getLog());
+            }
+        }
+    }
+
+    @Test
+    public void testDecreaseIncreaseLogLevelSingleContext() {
+        Map<String, Level> setLevelsMap = new HashMap<>();
+        setLevelsMap.put(null, Level.FINEST);   // level on language root level
+        setLevelsMap.put("a", Level.INFO);
+        setLevelsMap.put("a.a", Level.FINE);
+        TestHandler handler = new TestHandler();
+        Context.Builder builder = Context.newBuilder();
+        for (Map.Entry<String, Level> levelsMapEntry : setLevelsMap.entrySet()) {
+            builder.options(createLoggingOptions(LoggingLanguageFirst.ID, levelsMapEntry.getKey(), levelsMapEntry.getValue().toString()));
+        }
+        try (Context ctx = builder.logHandler(handler).build()) {
+            ctx.eval(LoggingLanguageFirst.ID, "");
+            List<Map.Entry<Level, String>> expected = new ArrayList<>();
+            expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, setLevelsMap.remove(null), setLevelsMap));
+            Assert.assertEquals(expected, handler.getLog());
+        }
+    }
+
+    @Test
+    public void testDecreaseIncreaseLogLevelMultipleContexts() {
+        Level defaultLevel = Level.INFO;
+        Map<String, Level> setLevelsMap = new HashMap<>();
+        setLevelsMap.put(null, Level.FINEST);   // level on language root level
+        setLevelsMap.put("a", Level.INFO);
+        setLevelsMap.put("a.a", Level.FINE);
+        Context.Builder builder = Context.newBuilder();
+        for (Map.Entry<String, Level> levelsMapEntry : setLevelsMap.entrySet()) {
+            builder.options(createLoggingOptions(LoggingLanguageFirst.ID, levelsMapEntry.getKey(), levelsMapEntry.getValue().toString()));
+        }
+        TestHandler handler = new TestHandler();
+        try (Context ctx = builder.logHandler(handler).build()) {
+            TestHandler handler2 = new TestHandler();
+            try (Context ctx2 = Context.newBuilder().logHandler(handler2).build()) {
+                ctx.eval(LoggingLanguageFirst.ID, "");
+                ctx2.eval(LoggingLanguageFirst.ID, "");
+                List<Map.Entry<Level, String>> expected = new ArrayList<>();
+                expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, setLevelsMap.remove(null), setLevelsMap));
+                Assert.assertEquals(expected, handler.getLog());
+                expected = new ArrayList<>();
+                expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, defaultLevel, Collections.emptyMap()));
+                Assert.assertEquals(expected, handler2.getLog());
+            }
+        }
+    }
+
+    @Test
+    public void testDisableLoggersSingleContext() {
+        Map<String, Level> setLevelsMap = new HashMap<>();
+        setLevelsMap.put(null, Level.FINEST);   // level on language root level
+        setLevelsMap.put("a", Level.OFF);
+        Context.Builder builder = Context.newBuilder();
+        for (Map.Entry<String, Level> levelsMapEntry : setLevelsMap.entrySet()) {
+            builder.options(createLoggingOptions(LoggingLanguageFirst.ID, levelsMapEntry.getKey(), levelsMapEntry.getValue().toString()));
+        }
+        TestHandler handler = new TestHandler();
+        try (Context ctx = builder.logHandler(handler).build()) {
+            ctx.eval(LoggingLanguageFirst.ID, "");
+            List<Map.Entry<Level, String>> expected = new ArrayList<>();
+            expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, setLevelsMap.remove(null), setLevelsMap));
+            Assert.assertEquals(expected, handler.getLog());
+        }
+    }
+
+    @Test
+    public void testDisableLoggersMultipleContexts() {
+        Level defaultLevel = Level.INFO;
+        Map<String, Level> setLevelsMap = new HashMap<>();
+        setLevelsMap.put(null, Level.FINEST);   // level on language root level
+        setLevelsMap.put("a", Level.OFF);
+        Context.Builder builder = Context.newBuilder();
+        for (Map.Entry<String, Level> levelsMapEntry : setLevelsMap.entrySet()) {
+            builder.options(createLoggingOptions(LoggingLanguageFirst.ID, levelsMapEntry.getKey(), levelsMapEntry.getValue().toString()));
+        }
+        TestHandler handler = new TestHandler();
+        try (Context ctx = builder.logHandler(handler).build()) {
+            TestHandler handler2 = new TestHandler();
+            try (Context ctx2 = Context.newBuilder().logHandler(handler2).build()) {
+                ctx.eval(LoggingLanguageFirst.ID, "");
+                ctx2.eval(LoggingLanguageFirst.ID, "");
+                List<Map.Entry<Level, String>> expected = new ArrayList<>();
+                expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, setLevelsMap.remove(null), setLevelsMap));
+                Assert.assertEquals(expected, handler.getLog());
+                expected = new ArrayList<>();
+                expected.addAll(createExpectedLog(LoggingLanguageFirst.ID, defaultLevel, Collections.emptyMap()));
+                Assert.assertEquals(expected, handler2.getLog());
+            }
+        }
+    }
+
+    private static void testLogToStream(Context.Builder contextBuilder, CloseableByteArrayOutputStream stream, boolean expectStreamClosed) {
+        AbstractLoggingLanguage.action = new BiPredicate<LoggingContext, Collection<TruffleLogger>>() {
+            @Override
+            @CompilerDirectives.TruffleBoundary
+            public boolean test(final LoggingContext context, final Collection<TruffleLogger> loggers) {
+                TruffleLogger.getLogger(LoggingLanguageFirst.ID).warning(LoggingLanguageFirst.ID);
+                TruffleLogger.getLogger(LoggingLanguageFirst.ID, "package.class").warning(LoggingLanguageFirst.ID + "::package.class");
+                return false;
+            }
+        };
+        try (Context ctx = contextBuilder.build()) {
+            ctx.eval(LoggingLanguageFirst.ID, "");
+        }
+        Assert.assertEquals(expectStreamClosed, stream.isClosed());
+        final String output = new String(stream.toByteArray());
+        final Pattern p = Pattern.compile("\\[(.*)\\]\\sWARNING:\\s(.*)");
+        for (String line : output.split("\n")) {
+            final Matcher m = p.matcher(line);
+            Assert.assertTrue(m.matches());
+            final String loggerName = m.group(1);
+            final String message = m.group(2);
+            Assert.assertEquals(message, loggerName);
+        }
     }
 
     private static void assertImmutable(final LogRecord r) {
@@ -837,6 +1012,24 @@ public class LoggingTest {
 
         void clear() {
             logRecords.clear();
+        }
+    }
+
+    private static final class CloseableByteArrayOutputStream extends ByteArrayOutputStream {
+        private boolean closed;
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            super.close();
+        }
+
+        boolean isClosed() {
+            return closed;
+        }
+
+        void clear() {
+            this.count = 0;
         }
     }
 }

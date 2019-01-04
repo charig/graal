@@ -1,26 +1,42 @@
 /*
- * Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.polyglot;
 
@@ -50,19 +66,30 @@ abstract class ToHostNode extends Node {
 
     /** Subtype or lossless conversion to primitive type (incl. unboxing). */
     static final int STRICT = 0;
-    /** Wrapping or array conversion; int to char. */
+    /** Wrapping (Map, List) or array conversion; int to char. */
     static final int LOOSE = 1;
-    /** Lossy conversion to String. */
-    static final int COERCE = 2;
+    /** Wrap executable into functional interface proxy. */
+    static final int FUNCTION_PROXY = 2;
+    /** Wrap object with members into arbitrary interface proxy. */
+    static final int OBJECT_PROXY = 3;
+    /** Lossy conversion from primitive to String, or String to primitive. */
+    static final int COERCE = 4;
     /** Host object to interface proxy conversion. */
-    static final int HOST_PROXY = 3;
-    static final int[] PRIORITIES = {STRICT, LOOSE, COERCE, HOST_PROXY};
+    static final int HOST_PROXY = 5;
+    static final int[] PRIORITIES = {STRICT, LOOSE, FUNCTION_PROXY, OBJECT_PROXY, COERCE, HOST_PROXY};
 
     @Child private Node isExecutable = Message.IS_EXECUTABLE.createNode();
     @Child private Node isInstantiable = Message.IS_INSTANTIABLE.createNode();
     @Child private Node isNull = Message.IS_NULL.createNode();
     @Child private Node hasKeysNode = Message.HAS_KEYS.createNode();
     @Child private ToHostPrimitiveNode primitive = ToHostPrimitiveNode.create();
+
+    ToHostNode() {
+    }
+
+    public static ToHostNode create() {
+        return ToHostNodeGen.create();
+    }
 
     public abstract Object execute(Object value, Class<?> targetType, Type genericType, PolyglotLanguageContext languageContext);
 
@@ -86,23 +113,33 @@ abstract class ToHostNode extends Node {
         return convertImpl(operand, targetType, genericType, languageContext);
     }
 
+    static Object toPrimitiveLossy(Object unboxedValue, Class<?> targetType) {
+        Object convertedValue = ToHostPrimitiveNode.toPrimitive(unboxedValue, targetType);
+        if (convertedValue != null) {
+            return convertedValue;
+        } else if (targetType == char.class || targetType == Character.class) {
+            Integer safeChar = ToHostPrimitiveNode.toInteger(unboxedValue);
+            if (safeChar != null) {
+                int v = safeChar;
+                if (v >= 0 && v < 65536) {
+                    return (char) v;
+                }
+            }
+        } else if (targetType == String.class && PolyglotImpl.isGuestPrimitive(unboxedValue)) {
+            return convertToString(unboxedValue);
+        } else if (isPrimitiveOrBoxedType(targetType) && unboxedValue instanceof String) {
+            assert targetType != char.class && targetType != Character.class;
+            return convertToPrimitiveFromString(targetType, (String) unboxedValue);
+        }
+        return null;
+    }
+
     private Object convertImpl(Object value, Class<?> targetType, Type genericType, PolyglotLanguageContext languageContext) {
         Object convertedValue;
         if (isAssignableFromTrufflePrimitiveType(targetType)) {
-            Object unboxed = primitive.unbox(value);
-            convertedValue = primitive.toPrimitive(unboxed, targetType);
+            convertedValue = toPrimitiveLossy(primitive.unbox(value), targetType);
             if (convertedValue != null) {
                 return convertedValue;
-            } else if (targetType == char.class || targetType == Character.class) {
-                Integer safeChar = primitive.toInteger(unboxed);
-                if (safeChar != null) {
-                    int v = safeChar;
-                    if (v >= 0 && v < 65536) {
-                        return (char) v;
-                    }
-                }
-            } else if (targetType == String.class && PolyglotImpl.isGuestPrimitive(unboxed)) {
-                return convertToString(unboxed);
             }
         }
         if (targetType == Value.class && languageContext != null) {
@@ -113,13 +150,7 @@ abstract class ToHostNode extends Node {
             convertedValue = value;
         } else {
             CompilerDirectives.transferToInterpreter();
-            String reason;
-            if (isAssignableFromTrufflePrimitiveType(targetType)) {
-                reason = "Invalid or lossy primitive coercion.";
-            } else {
-                reason = "Unsupported target type.";
-            }
-            throw HostInteropErrors.cannotConvert(languageContext, value, targetType, reason);
+            throw HostInteropErrors.cannotConvertPrimitive(languageContext, value, targetType);
         }
         return convertedValue;
     }
@@ -132,7 +163,7 @@ abstract class ToHostNode extends Node {
             return false;
         }
         Object unboxed = primitive.unbox(value);
-        Object convertedValue = primitive.toPrimitive(unboxed, targetType);
+        Object convertedValue = ToHostPrimitiveNode.toPrimitive(unboxed, targetType);
         if (convertedValue != null) {
             return true;
         }
@@ -140,15 +171,20 @@ abstract class ToHostNode extends Node {
             return false;
         }
         if (targetType == char.class || targetType == Character.class) {
-            Integer safeChar = primitive.toInteger(unboxed);
+            Integer safeChar = ToHostPrimitiveNode.toInteger(unboxed);
             if (safeChar != null) {
                 int v = safeChar;
                 if (v >= 0 && v < 65536) {
                     return true;
                 }
             }
-        } else if (priority >= COERCE && targetType == String.class && PolyglotImpl.isGuestPrimitive(unboxed)) {
-            return true;
+        } else if (priority >= COERCE) {
+            if (targetType == String.class && PolyglotImpl.isGuestPrimitive(unboxed)) {
+                return true;
+            } else if (isPrimitiveOrBoxedType(targetType) && unboxed instanceof String) {
+                assert targetType != char.class && targetType != Character.class;
+                return convertToPrimitiveFromString(targetType, (String) unboxed) != null;
+            }
         }
         return false;
     }
@@ -186,24 +222,22 @@ abstract class ToHostNode extends Node {
                 return primitive.hasSize(tValue);
             } else if (targetType == Map.class) {
                 return primitive.hasKeys(tValue);
-            } else if (targetType == Function.class) {
-                return isExecutable(tValue) || isInstantiable(tValue) || (TruffleOptions.AOT && ForeignAccess.sendHasKeys(hasKeysNode, tValue));
             } else if (targetType.isArray()) {
-                return primitive.hasKeys(tValue);
+                return primitive.hasSize(tValue);
             } else if (priority < HOST_PROXY && HostObject.isInstance(tValue)) {
                 return false;
             } else {
                 if (TruffleOptions.AOT) {
                     // support Function also with AOT
-                    if (targetType == Function.class) {
+                    if (priority >= FUNCTION_PROXY && targetType == Function.class) {
                         return isExecutable(tValue) || isInstantiable(tValue);
                     } else {
                         return false;
                     }
                 } else {
-                    if (HostInteropReflect.isFunctionalInterface(targetType) && (isExecutable(tValue) || isInstantiable(tValue))) {
+                    if (priority >= FUNCTION_PROXY && HostInteropReflect.isFunctionalInterface(targetType) && (isExecutable(tValue) || isInstantiable(tValue))) {
                         return true;
-                    } else if (targetType.isInterface() && ForeignAccess.sendHasKeys(hasKeysNode, tValue)) {
+                    } else if (priority >= OBJECT_PROXY && targetType.isInterface() && ForeignAccess.sendHasKeys(hasKeysNode, tValue)) {
                         return true;
                     } else {
                         return false;
@@ -227,6 +261,17 @@ abstract class ToHostNode extends Node {
                         clazz == char.class || clazz == Character.class ||
                         clazz == Number.class ||
                         CharSequence.class.isAssignableFrom(clazz);
+    }
+
+    private static boolean isPrimitiveOrBoxedType(Class<?> clazz) {
+        return clazz == int.class || clazz == Integer.class ||
+                        clazz == boolean.class || clazz == Boolean.class ||
+                        clazz == byte.class || clazz == Byte.class ||
+                        clazz == short.class || clazz == Short.class ||
+                        clazz == long.class || clazz == Long.class ||
+                        clazz == float.class || clazz == Float.class ||
+                        clazz == double.class || clazz == Double.class ||
+                        clazz == char.class || clazz == Character.class;
     }
 
     private boolean isExecutable(TruffleObject object) {
@@ -381,8 +426,123 @@ abstract class ToHostNode extends Node {
         return value.toString();
     }
 
-    public static ToHostNode create() {
-        return ToHostNodeGen.create();
+    private static Object convertToPrimitiveFromString(Class<?> targetType, String s) {
+        if (targetType == boolean.class || targetType == Boolean.class) {
+            return parseBooleanOrNull(s);
+        } else if (targetType == int.class || targetType == Integer.class) {
+            return parseIntOrNull(s);
+        } else if (targetType == long.class || targetType == Long.class) {
+            return parseLongOrNull(s);
+        } else if (targetType == double.class || targetType == Double.class) {
+            return parseDoubleOrNull(s);
+        } else if (targetType == float.class || targetType == Float.class) {
+            return parseFloatOrNull(s);
+        } else if (targetType == byte.class || targetType == Byte.class) {
+            return parseByteOrNull(s);
+        } else if (targetType == short.class || targetType == Short.class) {
+            return parseShortOrNull(s);
+        } else {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            throw new IllegalArgumentException(targetType.getName());
+        }
+    }
+
+    @TruffleBoundary
+    private static Object parseBooleanOrNull(String s) {
+        if ("true".equals(s)) {
+            return Boolean.TRUE;
+        } else if ("false".equals(s)) {
+            return Boolean.FALSE;
+        } else {
+            return null;
+        }
+    }
+
+    @TruffleBoundary
+    private static Byte parseByteOrNull(String s) {
+        try {
+            return Byte.parseByte(s);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    @TruffleBoundary
+    private static Short parseShortOrNull(String s) {
+        try {
+            return Short.parseShort(s);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    @TruffleBoundary
+    private static Integer parseIntOrNull(String s) {
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    @TruffleBoundary
+    private static Long parseLongOrNull(String s) {
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    @TruffleBoundary
+    private static Double parseDoubleOrNull(String s) {
+        try {
+            if (isValidFloatString(s)) {
+                return Double.parseDouble(s);
+            }
+        } catch (NumberFormatException ex) {
+        }
+        return null;
+    }
+
+    @TruffleBoundary
+    private static Float parseFloatOrNull(String s) {
+        try {
+            if (isValidFloatString(s)) {
+                double doubleValue = Double.parseDouble(s);
+                float floatValue = (float) doubleValue;
+                // The value does not fit into float if:
+                // * the float value is zero but the double value is non-zero (too small)
+                // * the float value is infinite but the double value is finite (too large)
+                if ((floatValue != 0.0 || doubleValue == 0.0) && (Float.isFinite(floatValue) || !Double.isFinite(doubleValue))) {
+                    return floatValue;
+                }
+            }
+        } catch (NumberFormatException ex) {
+        }
+        return null;
+    }
+
+    private static boolean isValidFloatString(String s) {
+        if (s.isEmpty()) {
+            return false;
+        }
+        char first = s.charAt(0);
+        char last = s.charAt(s.length() - 1);
+        // Disallow leading or trailing whitespace.
+        if (first <= ' ' || last <= ' ') {
+            return false;
+        }
+        // Disallow float type suffix.
+        switch (last) {
+            case 'D':
+            case 'F':
+            case 'd':
+            case 'f':
+                return false;
+            default:
+                return true;
+        }
     }
 
     static final class TypeAndClass<T> {

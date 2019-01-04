@@ -26,9 +26,6 @@ package com.oracle.svm.jni.access;
 
 // Checkstyle: allow reflection
 
-import static com.oracle.svm.jni.hosted.JNIFeature.Options.JNIConfigurationFiles;
-import static com.oracle.svm.jni.hosted.JNIFeature.Options.JNIConfigurationResources;
-
 import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -39,7 +36,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
+import com.oracle.svm.core.option.HostedOptionKey;
 import org.graalvm.compiler.api.replacements.Fold;
+import org.graalvm.compiler.options.Option;
 import org.graalvm.nativeimage.Feature;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.impl.ReflectionRegistry;
@@ -51,6 +50,7 @@ import com.oracle.graal.pointsto.flow.TypeFlow;
 import com.oracle.graal.pointsto.meta.AnalysisField;
 import com.oracle.graal.pointsto.meta.AnalysisMethod;
 import com.oracle.graal.pointsto.meta.AnalysisType;
+import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.hosted.FeatureImpl.AfterRegistrationAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.BeforeAnalysisAccessImpl;
@@ -58,11 +58,12 @@ import com.oracle.svm.hosted.FeatureImpl.CompilationAccessImpl;
 import com.oracle.svm.hosted.FeatureImpl.DuringAnalysisAccessImpl;
 import com.oracle.svm.hosted.c.NativeLibraries;
 import com.oracle.svm.hosted.config.ReflectionConfigurationParser;
+import com.oracle.svm.hosted.jni.JNIRuntimeAccess.JNIRuntimeAccessibilitySupport;
+import com.oracle.svm.hosted.meta.MaterializedConstantFields;
 import com.oracle.svm.jni.JNIJavaCallWrappers;
 import com.oracle.svm.jni.hosted.JNICallTrampolineMethod;
 import com.oracle.svm.jni.hosted.JNIJavaCallWrapperMethod;
 import com.oracle.svm.jni.hosted.JNIJavaCallWrapperMethod.CallVariant;
-import com.oracle.svm.jni.hosted.JNIRuntimeAccess.JNIRuntimeAccessibilitySupport;
 
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
@@ -90,12 +91,16 @@ public class JNIAccessFeature implements Feature {
 
     private final Set<Class<?>> newClasses = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private final Set<Executable> newMethods = Collections.newSetFromMap(new ConcurrentHashMap<>());
-    private final Set<Field> newFields = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private final Map<Field, Boolean> newFields = new ConcurrentHashMap<>();
     private final Map<JNINativeLinkage, JNINativeLinkage> newLinkages = new ConcurrentHashMap<>();
 
     private final Map<JNINativeLinkage, JNINativeLinkage> nativeLinkages = new ConcurrentHashMap<>();
 
     private boolean haveJavaRuntimeReflectionSupport;
+
+    public static class Options {
+        @Option(help = "Print JNI methods added to generated image") public static final HostedOptionKey<Boolean> PrintJNIMethods = new HostedOptionKey<>(false);
+    }
 
     private void abortIfSealed() {
         UserError.guarantee(!sealed, "Classes, methods and fields must be registered for JNI access before the analysis has completed.");
@@ -111,7 +116,7 @@ public class JNIAccessFeature implements Feature {
         ImageSingletons.add(JNIRuntimeAccessibilitySupport.class, registry);
 
         ReflectionConfigurationParser parser = new ReflectionConfigurationParser(registry, access.getImageClassLoader());
-        parser.parseAndRegisterConfigurations("JNI", JNIConfigurationFiles, JNIConfigurationResources);
+        parser.parseAndRegisterConfigurations("JNI", SubstrateOptions.JNIConfigurationFiles, SubstrateOptions.JNIConfigurationResources);
     }
 
     private class JNIRuntimeAccessibilitySupportImpl implements JNIRuntimeAccessibilitySupport, ReflectionRegistry {
@@ -128,9 +133,12 @@ public class JNIAccessFeature implements Feature {
         }
 
         @Override
-        public void register(Field... fields) {
+        public void register(boolean finalIsWritable, Field... fields) {
             abortIfSealed();
-            newFields.addAll(Arrays.asList(fields));
+            for (Field field : fields) {
+                boolean writable = finalIsWritable || !Modifier.isFinal(field.getModifiers());
+                newFields.put(field, writable);
+            }
         }
     }
 
@@ -173,7 +181,15 @@ public class JNIAccessFeature implements Feature {
 
     public JNINativeLinkage makeLinkage(String declaringClass, String name, String descriptor) {
         UserError.guarantee(!sealed, "All linkages for JNI calls must be created before the analysis has completed.");
+
         JNINativeLinkage key = new JNINativeLinkage(declaringClass, name, descriptor);
+
+        // Checkstyle: stop
+        if (JNIAccessFeature.Options.PrintJNIMethods.getValue()) {
+            System.out.println("Creating a new JNINativeLinkage: " + key.toString());
+        }
+        // Checkstyle: resume
+
         return nativeLinkages.computeIfAbsent(key, linkage -> {
             newLinkages.put(linkage, linkage);
             return linkage;
@@ -201,9 +217,9 @@ public class JNIAccessFeature implements Feature {
         }
         newMethods.clear();
 
-        for (Field field : newFields) {
-            addField(field, access);
-        }
+        newFields.forEach((field, writable) -> {
+            addField(field, writable, access);
+        });
         newFields.clear();
 
         JNIReflectionDictionary.singleton().addLinkages(newLinkages);
@@ -215,7 +231,9 @@ public class JNIAccessFeature implements Feature {
     private static JNIAccessibleClass addClass(Class<?> classObj, DuringAnalysisAccessImpl access) {
         return JNIReflectionDictionary.singleton().addClassIfAbsent(classObj, c -> {
             AnalysisType analysisClass = access.getMetaAccess().lookupJavaType(classObj);
-            if (analysisClass.isArray() || (analysisClass.isInstanceClass() && !analysisClass.isAbstract())) {
+            if (analysisClass.isInterface() || (analysisClass.isInstanceClass() && analysisClass.isAbstract())) {
+                analysisClass.registerAsInTypeCheck();
+            } else {
                 analysisClass.registerAsAllocated(null);
             }
             return new JNIAccessibleClass(classObj);
@@ -254,23 +272,26 @@ public class JNIAccessFeature implements Feature {
         });
     }
 
-    private static void addField(Field reflField, DuringAnalysisAccessImpl access) {
+    private static void addField(Field reflField, boolean writable, DuringAnalysisAccessImpl access) {
         BigBang bigBang = access.getBigBang();
         JNIAccessibleClass jniClass = addClass(reflField.getDeclaringClass(), access);
-        jniClass.addFieldIfAbsent(reflField.getName(), n -> {
-            AnalysisField field = access.getMetaAccess().lookupJavaField(reflField);
-            field.registerAsAccessed();
-            // Same as BigBang.addSystemField() and BigBang.addSystemStaticField():
-            // create type flows for any subtype of the field's declared type
-            TypeFlow<?> declaredTypeFlow = field.getType().getTypeFlow(bigBang, true);
-            if (field.isStatic()) {
-                declaredTypeFlow.addUse(bigBang, field.getStaticFieldFlow());
-            } else {
-                FieldTypeFlow instanceFieldFlow = field.getDeclaringClass().getContextInsensitiveAnalysisObject().getInstanceFieldFlow(bigBang, field, true);
-                declaredTypeFlow.addUse(bigBang, instanceFieldFlow);
-            }
-            return new JNIAccessibleField(jniClass, reflField.getName(), field.getJavaKind(), field.getModifiers());
-        });
+        AnalysisField field = access.getMetaAccess().lookupJavaField(reflField);
+        jniClass.addFieldIfAbsent(field.getName(), name -> new JNIAccessibleField(jniClass, name, field.getJavaKind(), field.getModifiers()));
+        field.registerAsRead(null);
+        if (writable) {
+            field.registerAsWritten(null);
+        } else if (field.isStatic() && field.isFinal()) {
+            MaterializedConstantFields.singleton().register(field);
+        }
+        // Same as BigBang.addSystemField() and BigBang.addSystemStaticField():
+        // create type flows for any subtype of the field's declared type
+        TypeFlow<?> declaredTypeFlow = field.getType().getTypeFlow(bigBang, true);
+        if (field.isStatic()) {
+            declaredTypeFlow.addUse(bigBang, field.getStaticFieldFlow());
+        } else {
+            FieldTypeFlow instanceFieldFlow = field.getDeclaringClass().getContextInsensitiveAnalysisObject().getInstanceFieldFlow(bigBang, field, writable);
+            declaredTypeFlow.addUse(bigBang, instanceFieldFlow);
+        }
     }
 
     @Override

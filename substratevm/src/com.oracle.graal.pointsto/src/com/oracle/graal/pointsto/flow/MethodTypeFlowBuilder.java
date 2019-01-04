@@ -158,6 +158,14 @@ public class MethodTypeFlowBuilder {
         typeFlowGraphBuilder = new TypeFlowGraphBuilder(bb);
     }
 
+    public MethodTypeFlowBuilder(BigBang bb, StructuredGraph graph) {
+        this.bb = bb;
+        this.graph = graph;
+        this.method = (AnalysisMethod) graph.method();
+        this.methodFlow = method.getTypeFlow();
+        this.typeFlowGraphBuilder = null;
+    }
+
     @SuppressWarnings("try")
     private boolean parse() {
         OptionValues options = bb.getOptions();
@@ -201,12 +209,12 @@ public class MethodTypeFlowBuilder {
                 }
 
                 // Register used types and fields before canonicalization can optimize them.
-                registerUsedElements(bb, graph, methodFlow);
+                registerUsedElements();
 
                 new CanonicalizerPhase().apply(graph, new PhaseContext(bb.getProviders()));
 
                 // Do it again after canonicalization changed type checks and field accesses.
-                registerUsedElements(bb, graph, methodFlow);
+                registerUsedElements();
             } catch (Throwable e) {
                 throw debug.handle(e);
             }
@@ -214,7 +222,7 @@ public class MethodTypeFlowBuilder {
         return true;
     }
 
-    public static void registerUsedElements(BigBang bb, StructuredGraph graph, MethodTypeFlow methodFlow) {
+    public void registerUsedElements() {
         for (Node n : graph.getNodes()) {
             if (n instanceof InstanceOfNode) {
                 InstanceOfNode node = (InstanceOfNode) n;
@@ -946,7 +954,7 @@ public class MethodTypeFlowBuilder {
                 AnalysisUnsafePartitionLoadNode node = (AnalysisUnsafePartitionLoadNode) n;
                 assert node.object().getStackKind() == JavaKind.Object;
 
-                checkUnsafeOffset(node.offset());
+                checkUnsafeOffset(node.object(), node.offset());
 
                 AnalysisType partitionType = (AnalysisType) node.partitionType();
 
@@ -971,7 +979,7 @@ public class MethodTypeFlowBuilder {
                 assert node.object().getStackKind() == JavaKind.Object;
                 assert node.value().getStackKind() == JavaKind.Object;
 
-                checkUnsafeOffset(node.offset());
+                checkUnsafeOffset(node.object(), node.offset());
 
                 AnalysisType partitionType = (AnalysisType) node.partitionType();
 
@@ -1001,7 +1009,7 @@ public class MethodTypeFlowBuilder {
             } else if (n instanceof RawLoadNode) {
                 RawLoadNode node = (RawLoadNode) n;
 
-                checkUnsafeOffset(node.offset());
+                checkUnsafeOffset(node.object(), node.offset());
 
                 if (node.object().getStackKind() == JavaKind.Object && node.getStackKind() == JavaKind.Object) {
                     AnalysisType objectType = (AnalysisType) StampTool.typeOrNull(node.object());
@@ -1034,7 +1042,7 @@ public class MethodTypeFlowBuilder {
             } else if (n instanceof RawStoreNode) {
                 RawStoreNode node = (RawStoreNode) n;
 
-                checkUnsafeOffset(node.offset());
+                checkUnsafeOffset(node.object(), node.offset());
 
                 if (node.object().getStackKind() == JavaKind.Object && node.value().getStackKind() == JavaKind.Object) {
                     AnalysisType objectType = (AnalysisType) StampTool.typeOrNull(node.object());
@@ -1068,7 +1076,7 @@ public class MethodTypeFlowBuilder {
                 }
             } else if (n instanceof UnsafeCompareAndSwapNode) {
                 UnsafeCompareAndSwapNode node = (UnsafeCompareAndSwapNode) n;
-                checkUnsafeOffset(node.offset());
+                checkUnsafeOffset(node.object(), node.offset());
                 if (node.object().getStackKind() == JavaKind.Object && node.newValue().getStackKind() == JavaKind.Object) {
                     AnalysisType objectType = (AnalysisType) StampTool.typeOrNull(node.object());
                     TypeFlowBuilder<?> objectBuilder = state.lookup(node.object());
@@ -1103,7 +1111,7 @@ public class MethodTypeFlowBuilder {
 
             } else if (n instanceof AtomicReadAndWriteNode) {
                 AtomicReadAndWriteNode node = (AtomicReadAndWriteNode) n;
-                checkUnsafeOffset(node.offset());
+                checkUnsafeOffset(node.object(), node.offset());
                 if (node.object().getStackKind() == JavaKind.Object && node.newValue().getStackKind() == JavaKind.Object) {
 
                     AnalysisType objectType = (AnalysisType) StampTool.typeOrNull(node.object());
@@ -1488,7 +1496,7 @@ public class MethodTypeFlowBuilder {
     }
 
     /** Hook for unsafe offset value checks. */
-    protected void checkUnsafeOffset(@SuppressWarnings("unused") ValueNode offset) {
+    protected void checkUnsafeOffset(@SuppressWarnings("unused") ValueNode base, @SuppressWarnings("unused") ValueNode offset) {
     }
 
 }

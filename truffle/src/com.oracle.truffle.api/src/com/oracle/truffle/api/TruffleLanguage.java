@@ -2,29 +2,44 @@
  * Copyright (c) 2014, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.api;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -56,7 +71,6 @@ import org.graalvm.polyglot.io.FileSystem;
 
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.TruffleFile.FileAdapter;
 import com.oracle.truffle.api.TruffleLanguage.Env;
 import com.oracle.truffle.api.TruffleStackTrace.LazyStackTrace;
 import com.oracle.truffle.api.frame.Frame;
@@ -72,6 +86,7 @@ import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
+import java.nio.file.Path;
 
 /**
  * A Truffle language implementation contains all the services a language should provide to make it
@@ -1382,31 +1397,45 @@ public abstract class TruffleLanguage<C> {
         }
 
         /**
-         * Creates a new thread that has access to the current language context. A thread is
-         * {@link TruffleLanguage#initializeThread(Object, Thread) initialized} when it is
-         * {@link Thread#start() started} and {@link TruffleLanguage#disposeThread(Object, Thread)
-         * disposed} as soon as the thread finished the execution. In order to start threads the
-         * language needs to {@link TruffleLanguage#isThreadAccessAllowed(Thread, boolean) allow}
-         * access from multiple threads at the same time.
-         * <p>
-         * It is recommended to set an
-         * {@link Thread#setUncaughtExceptionHandler(java.lang.Thread.UncaughtExceptionHandler)
-         * uncaught exception handler} for the created thread. For example the thread can throw an
-         * uncaught exception if one of the initialized language contexts don't support execution on
-         * this thread.
-         * <p>
-         * The language that created and started the thread is responsible to complete all running
-         * or waiting threads when the context is {@link TruffleLanguage#disposeContext(Object)
-         * disposed}.
+         * Creates a new thread that has access to the current language context. See
+         * {@link #createThread(Runnable, TruffleContext, ThreadGroup, long)} for a detailed
+         * description of the parameters. The <code>group</code> is null and <code>stackSize</code>
+         * set to 0.
          *
-         * @param runnable the runnable to run on this thread.
-         * @throws IllegalStateException if thread creation is not {@link #isCreateThreadAllowed()
-         *             allowed}.
          * @since 0.28
          */
         @TruffleBoundary
         public Thread createThread(Runnable runnable) {
             return createThread(runnable, null);
+        }
+
+        /**
+         * Creates a new thread that has access to the given context. See
+         * {@link #createThread(Runnable, TruffleContext, ThreadGroup, long)} for a detailed
+         * description of the parameters. The <code>group</code> is null and <code>stackSize</code>
+         * set to 0.
+         *
+         * @see #getContext()
+         * @see #newContextBuilder()
+         * @since 0.28
+         */
+        @TruffleBoundary
+        public Thread createThread(Runnable runnable, @SuppressWarnings("hiding") TruffleContext context) {
+            return createThread(runnable, context, null, 0);
+        }
+
+        /**
+         * Creates a new thread that has access to the given context. See
+         * {@link #createThread(Runnable, TruffleContext, ThreadGroup, long)} for a detailed
+         * description of the parameters. The <code>stackSize</code> set to 0.
+         *
+         * @see #getContext()
+         * @see #newContextBuilder()
+         * @since 0.28
+         */
+        @TruffleBoundary
+        public Thread createThread(Runnable runnable, @SuppressWarnings("hiding") TruffleContext context, ThreadGroup group) {
+            return createThread(runnable, context, group, 0);
         }
 
         /**
@@ -1429,8 +1458,11 @@ public abstract class TruffleLanguage<C> {
          * {@link #newContextBuilder()}.{@link TruffleContext.Builder#build() build()}, or the
          * context associated with this environment obtained from {@link #getContext()}.
          *
-         * @param runnable the runnable to run on this thread
+         * @param runnable the runnable to run on this thread.
          * @param context the context to enter and leave when the thread is started.
+         * @param group the thread group, passed on to the underlying {@link Thread}.
+         * @param stackSize the desired stack size for the new thread, or zero if this parameter is
+         *            to be ignored.
          * @throws IllegalStateException if thread creation is not {@link #isCreateThreadAllowed()
          *             allowed}.
          * @see #getContext()
@@ -1438,8 +1470,8 @@ public abstract class TruffleLanguage<C> {
          * @since 0.28
          */
         @TruffleBoundary
-        public Thread createThread(Runnable runnable, @SuppressWarnings("hiding") TruffleContext context) {
-            return AccessAPI.engineAccess().createThread(vmObject, runnable, context != null ? context.impl : null);
+        public Thread createThread(Runnable runnable, @SuppressWarnings("hiding") TruffleContext context, ThreadGroup group, long stackSize) {
+            return AccessAPI.engineAccess().createThread(vmObject, runnable, context != null ? context.impl : null, group, stackSize);
         }
 
         /**
@@ -1910,6 +1942,20 @@ public abstract class TruffleLanguage<C> {
         }
 
         /**
+         * Returns <code>true</code> if this {@link org.graalvm.polyglot.Context} is being
+         * pre-initialized. For a given {@link Env environment}, the return value of this method
+         * never changes.
+         *
+         * @see #initializeContext(Object)
+         * @see #patchContext(Object, Env)
+         * @since 1.0
+         */
+        @TruffleBoundary
+        public boolean isPreInitialization() {
+            return AccessAPI.engineAccess().inContextPreInitialization(vmObject);
+        }
+
+        /**
          * Returns a {@link TruffleFile} for given path.
          *
          * @param path the absolute or relative path to create {@link TruffleFile} for
@@ -1939,14 +1985,41 @@ public abstract class TruffleLanguage<C> {
         }
 
         /**
+         * Gets the current working directory. The current working directory is used to resolve non
+         * absolute paths in {@link TruffleFile} methods.
+         *
+         * @return the current working directory
+         * @throws SecurityException if the {@link FileSystem filesystem} denies reading of the
+         *             current working directory
          * @since 1.0
-         * @deprecated use {@link Source#newBuilder(String, TruffleFile)} instead.
          */
-        @SuppressWarnings({"static-method", "deprecation"})
-        @Deprecated
-        public Source.Builder<IOException, RuntimeException, RuntimeException> newSourceBuilder(final TruffleFile file) {
-            Objects.requireNonNull(file, "File must be non null");
-            return Source.newBuilder(new TruffleFile.FileAdapter(file));
+        @TruffleBoundary
+        public TruffleFile getCurrentWorkingDirectory() {
+            return getTruffleFile("").getAbsoluteFile();
+        }
+
+        /**
+         * Sets the current working directory. The current working directory is used to resolve non
+         * absolute paths in {@link TruffleFile} methods.
+         *
+         * @param currentWorkingDirectory the new current working directory
+         * @throws UnsupportedOperationException if setting of the current working directory is not
+         *             supported
+         * @throws IllegalArgumentException if the {@code currentWorkingDirectory} is not a valid
+         *             current working directory
+         * @throws SecurityException if {@code currentWorkingDirectory} is not readable
+         * @since 1.0
+         */
+        @TruffleBoundary
+        public void setCurrentWorkingDirectory(TruffleFile currentWorkingDirectory) {
+            Objects.requireNonNull(currentWorkingDirectory, "Current working directory must be non null.");
+            if (!currentWorkingDirectory.isAbsolute()) {
+                throw new IllegalArgumentException("Current working directory must be absolute.");
+            }
+            if (!currentWorkingDirectory.isDirectory()) {
+                throw new IllegalArgumentException("Current working directory must be directory.");
+            }
+            fileSystem.setCurrentWorkingDirectory(currentWorkingDirectory.getSPIPath());
         }
 
         @SuppressWarnings("rawtypes")
@@ -2510,20 +2583,8 @@ public abstract class TruffleLanguage<C> {
         }
 
         @Override
-        public boolean checkTruffleFile(File file) {
-            return file instanceof FileAdapter;
-        }
-
-        @Override
-        public byte[] truffleFileContent(File file) throws IOException {
-            assert file instanceof FileAdapter : "File must be " + FileAdapter.class.getSimpleName();
-            final TruffleFile tf = ((FileAdapter) file).getTruffleFile();
-            return tf.readAllBytes();
-        }
-
-        @Override
-        public File asFile(TruffleFile file) {
-            return new FileAdapter(file);
+        public Path getPath(TruffleFile file) {
+            return file.getSPIPath();
         }
 
         @Override

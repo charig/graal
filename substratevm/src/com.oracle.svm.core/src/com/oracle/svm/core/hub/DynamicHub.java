@@ -30,6 +30,7 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.Serializable;
 import java.lang.annotation.Annotation;
+import java.lang.annotation.Inherited;
 import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.AnnotatedType;
 import java.lang.reflect.Constructor;
@@ -57,9 +58,7 @@ import org.graalvm.nativeimage.Platform;
 import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.c.function.CFunctionPointer;
 
-import com.oracle.svm.core.HostedIdentityHashCodeProvider;
 import com.oracle.svm.core.SubstrateOptions;
-import com.oracle.svm.core.annotate.Alias;
 import com.oracle.svm.core.annotate.Hybrid;
 import com.oracle.svm.core.annotate.KeepOriginal;
 import com.oracle.svm.core.annotate.Substitute;
@@ -85,7 +84,7 @@ import sun.security.util.SecurityConstants;
 @TargetClass(java.lang.Class.class)
 @SuppressWarnings({"static-method", "serial"})
 @SuppressFBWarnings(value = "Se", justification = "DynamicHub must implement Serializable for compatibility with java.lang.Class, not because of actual serialization")
-public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedElement, HostedIdentityHashCodeProvider, java.lang.reflect.Type, GenericDeclaration, Serializable {
+public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedElement, java.lang.reflect.Type, GenericDeclaration, Serializable {
 
     /* Value copied from java.lang.Class. */
     private static final int SYNTHETIC = 0x00001000;
@@ -215,6 +214,27 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
     private Object annotationsEncoding;
 
     /**
+     * Class/superclass/implemented interfaces has default methods. Necessary metadata for class
+     * initialization, but even for classes/interfaces that are already initialized during image
+     * generation, so it cannot be a field in {@link ClassInitializationInfo}.
+     */
+    private boolean hasDefaultMethods;
+
+    /**
+     * Directly declares default methods. Necessary metadata for class initialization, but even for
+     * interfaces that are already initialized during image generation, so it cannot be a field in
+     * {@link ClassInitializationInfo}.
+     */
+    private boolean declaresDefaultMethods;
+
+    /**
+     * Metadata for running class initializers at run time. Refers to a singleton marker object for
+     * classes/interfaces already initialized during image generation, i.e., this field is never
+     * null at run time.
+     */
+    private ClassInitializationInfo classInitializationInfo;
+
+    /**
      * Classloader used for loading this class during image-build time.
      */
     private final Target_java_lang_ClassLoader classloader;
@@ -234,27 +254,29 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
 
     @Hybrid.Array private CFunctionPointer[] vtable;
 
-    @Platforms(Platform.HOSTED_ONLY.class) private int hostedIdentityHashCode;
-
     private GenericInfo genericInfo;
     private AnnotatedSuperInfo annotatedSuperInfo;
 
-    @Alias private static java.security.ProtectionDomain allPermDomain;
+    private static java.security.ProtectionDomain allPermDomain;
 
     @Platforms(Platform.HOSTED_ONLY.class)
     public DynamicHub(String name, boolean isLocalClass, DynamicHub superType, DynamicHub componentHub, String sourceFileName, boolean isStatic, boolean isSynthetic,
                     Target_java_lang_ClassLoader classLoader) {
-        /* Class names must be interned strings according to the Java spec. */
-        this.name = name.intern();
+        this.name = name;
         this.isLocalClass = isLocalClass;
         this.superHub = superType;
         this.componentHub = componentHub;
         this.sourceFileName = sourceFileName;
-        this.genericInfo = GenericInfo.forEmpty();
-        this.annotatedSuperInfo = AnnotatedSuperInfo.forEmpty();
         this.isStatic = isStatic;
         this.isSynthetic = isSynthetic;
         this.classloader = classLoader;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public void setClassInitializationInfo(ClassInitializationInfo classInitializationInfo, boolean hasDefaultMethods, boolean declaresDefaultMethods) {
+        this.classInitializationInfo = classInitializationInfo;
+        this.hasDefaultMethods = hasDefaultMethods;
+        this.declaresDefaultMethods = declaresDefaultMethods;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -294,13 +316,28 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
+    public GenericInfo getGenericInfo() {
+        return genericInfo;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
     public void setAnnotatedSuperInfo(AnnotatedSuperInfo annotatedSuperInfo) {
         this.annotatedSuperInfo = annotatedSuperInfo;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
+    public AnnotatedSuperInfo getAnnotatedSuperInfo() {
+        return annotatedSuperInfo;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
     public void setInterfacesEncoding(Object interfacesEncoding) {
         this.interfacesEncoding = interfacesEncoding;
+    }
+
+    @Platforms(Platform.HOSTED_ONLY.class)
+    public Object getInterfacesEncoding() {
+        return interfacesEncoding;
     }
 
     @Platforms(Platform.HOSTED_ONLY.class)
@@ -323,16 +360,26 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
         this.metaType = metaType;
     }
 
-    @Override
-    @Platforms(Platform.HOSTED_ONLY.class)
-    public int hostedIdentityHashCode() {
-        return hostedIdentityHashCode;
+    public boolean hasDefaultMethods() {
+        return hasDefaultMethods;
     }
 
-    @Platforms(Platform.HOSTED_ONLY.class)
-    public void setHostedIdentityHashCode(int newHostedIdentityHashCode) {
-        assert this.hostedIdentityHashCode == 0 || this.hostedIdentityHashCode == newHostedIdentityHashCode;
-        this.hostedIdentityHashCode = newHostedIdentityHashCode;
+    public boolean declaresDefaultMethods() {
+        return declaresDefaultMethods;
+    }
+
+    public ClassInitializationInfo getClassInitializationInfo() {
+        return classInitializationInfo;
+    }
+
+    public boolean isInitialized() {
+        return classInitializationInfo.isInitialized();
+    }
+
+    public void ensureInitialized() {
+        if (!classInitializationInfo.isInitialized()) {
+            classInitializationInfo.initialize(this);
+        }
     }
 
     public SharedType getMetaType() {
@@ -388,9 +435,13 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
         return KnownIntrinsics.unsafeCast(clazz, DynamicHub.class);
     }
 
+    /*
+     * Note that this method must be a static method and not an instance method, otherwise null
+     * values cannot be converted.
+     */
     @Uninterruptible(reason = "Called from uninterruptible code.", mayBeInlined = true)
-    public Class<?> asClass() {
-        return KnownIntrinsics.unsafeCast(this, Class.class);
+    public static Class<?> toClass(DynamicHub hub) {
+        return KnownIntrinsics.unsafeCast(hub, Class.class);
     }
 
     @Substitute
@@ -472,7 +523,7 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
          * We do not do the check "this.getModifiers() & ANNOTATION) != 0" because we do not have
          * the full modifier bits.
          */
-        return isInterface() && getInterfaces().length == 1 && getInterfaces()[0].asClass() == Annotation.class;
+        return isInterface() && getInterfaces().length == 1 && DynamicHub.toClass(getInterfaces()[0]) == Annotation.class;
     }
 
     @Substitute
@@ -666,6 +717,31 @@ public final class DynamicHub implements JavaKind.FormatWithToString, AnnotatedE
     @Override
     public Annotation[] getAnnotations() {
         return AnnotationsEncoding.getAnnotations(annotationsEncoding);
+    }
+
+    @Substitute
+    @Override
+    @SuppressWarnings("unchecked")
+    public <T extends Annotation> T[] getAnnotationsByType(Class<T> annotationClass) {
+
+        /*
+         * Custom rewrite of GenericDeclaration.super.getAnnotationsByType(annotationClass) to avoid
+         * the call to AnnotationType.getInstance(annotationClass).isInherited(). Calling
+         * AnnotationType.getInstance(annotationClass) requires registration of the corresponding
+         * AnnotationType objects in the image heap during image build time. This is currently done
+         * only for repeatable annotations for space economy reasons.
+         */
+        T[] result = getDeclaredAnnotationsByType(annotationClass);
+
+        if (result.length == 0 && annotationClass.getAnnotation(Inherited.class) != null) {
+            DynamicHub superClass = (DynamicHub) this.getSuperclass();
+            if (superClass != null) {
+                /* Determine if the annotation is associated with the superclass. */
+                result = superClass.getAnnotationsByType(annotationClass);
+            }
+        }
+
+        return result;
     }
 
     @Substitute

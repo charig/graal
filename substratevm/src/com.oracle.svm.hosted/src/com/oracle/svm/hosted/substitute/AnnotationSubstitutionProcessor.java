@@ -60,18 +60,21 @@ import com.oracle.svm.core.annotate.Inject;
 import com.oracle.svm.core.annotate.InjectAccessors;
 import com.oracle.svm.core.annotate.KeepOriginal;
 import com.oracle.svm.core.annotate.RecomputeFieldValue;
+import com.oracle.svm.core.annotate.RecomputeFieldValue.Kind;
 import com.oracle.svm.core.annotate.Substitute;
 import com.oracle.svm.core.annotate.TargetClass;
 import com.oracle.svm.core.annotate.TargetElement;
 import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.core.util.VMError;
+import com.oracle.svm.hosted.ClassInitializationFeature;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.NativeImageGenerator;
 import com.oracle.svm.hosted.NativeImageOptions;
 import com.oracle.svm.hosted.annotation.AnnotationSubstitutionType;
 import com.oracle.svm.hosted.annotation.CustomSubstitutionMethod;
 
+import jdk.vm.ci.common.NativeImageReinitialize;
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaField;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
@@ -144,6 +147,10 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
 
     public boolean isDeleted(ResolvedJavaField field) {
         return deleteAnnotations.get(field) != null;
+    }
+
+    public boolean isDeleted(Class<?> clazz) {
+        return deleteAnnotations.containsKey(metaAccess.lookupJavaType(clazz));
     }
 
     public Optional<ResolvedJavaField> findSubstitution(ResolvedJavaField field) {
@@ -221,6 +228,11 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
         for (Class<?> annotatedClass : annotatedClasses) {
             handleClass(annotatedClass);
         }
+
+        List<Field> annotatedFields = imageClassLoader.findAnnotatedFields(NativeImageReinitialize.class);
+        for (Field annotatedField : annotatedFields) {
+            reinitializeField(annotatedField);
+        }
     }
 
     protected List<Class<?>> findTargetClasses() {
@@ -241,6 +253,12 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
             return;
         }
 
+        /*
+         * The annotatedClass is never used directly, i.e., never wrapped in an AnalysisType. So we
+         * need to ensure manually here that its static initializer runs.
+         */
+        ClassInitializationFeature.singleton().forceInitializeHosted(annotatedClass);
+
         Delete deleteAnnotation = lookupAnnotation(annotatedClass, Delete.class);
         Substitute substituteAnnotation = lookupAnnotation(annotatedClass, Substitute.class);
 
@@ -257,9 +275,11 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
     }
 
     private void handleAliasClass(Class<?> annotatedClass, Class<?> originalClass, TargetClass targetClassAnnotation) {
-        String expectedName = "Target_" + originalClass.getName().replace('.', '_').replace('$', '_');
         if (VerifyNamingConventions.getValue() && targetClassAnnotation.classNameProvider() == TargetClass.NoClassNameProvider.class) {
-            guarantee(annotatedClass.getSimpleName().equals(expectedName), "Naming convention violation: %s must be named %s", annotatedClass, expectedName);
+            String expectedName = "Target_" + originalClass.getName().replace('.', '_').replace('$', '_');
+            String actualName = annotatedClass.getSimpleName();
+            guarantee(actualName.equals(expectedName) || actualName.startsWith(expectedName + "_"),
+                            "Naming convention violation: %s must be named %s or %s_<suffix>", annotatedClass, expectedName, expectedName);
         }
 
         ResolvedJavaType original = metaAccess.lookupJavaType(originalClass);
@@ -371,12 +391,39 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
             guarantee(annotated.isStatic() == original.isStatic(), "Static modifier mismatch: %s, %s", annotated, original);
             guarantee(annotated.getJavaKind() == original.getJavaKind(), "Type mismatch: %s, %s", annotated, original);
 
+            RecomputeFieldValue recomputeAnnotation = lookupAnnotation(annotatedField, RecomputeFieldValue.class);
+            if (Modifier.isStatic(annotatedField.getModifiers()) && (recomputeAnnotation == null || recomputeAnnotation.kind() != RecomputeFieldValue.Kind.FromAlias)) {
+                guarantee(hasDefaultValue(annotatedField), "The value assigned to a static @Alias field is ignored unless @RecomputeFieldValue with kind=FromAlias is used: %s", annotated);
+            }
+            guarantee(!Modifier.isFinal(annotatedField.getModifiers()), "The `final` modifier for the @Alias field is ignored and therefore misleading: %s", annotated);
+
             if (deleteAnnotation != null) {
                 registerAsDeleted(annotated, original, deleteAnnotation);
             } else {
                 ResolvedJavaField alias = fieldValueRecomputation(originalClass, original, annotated, annotatedField);
                 register(fieldSubstitutions, annotated, original, alias);
             }
+        }
+    }
+
+    private static boolean hasDefaultValue(Field annotatedField) {
+        try {
+            annotatedField.setAccessible(true);
+            /*
+             * We use the automatic widening of primitive types to reduce the number of different
+             * types we have to distinguish here.
+             */
+            if (!annotatedField.getType().isPrimitive()) {
+                return annotatedField.get(null) == null;
+            } else if (annotatedField.getType() == float.class || annotatedField.getType() == double.class) {
+                return annotatedField.getDouble(null) == 0D;
+            } else if (annotatedField.getType() == boolean.class) {
+                return annotatedField.getBoolean(null) == false;
+            } else {
+                return annotatedField.getLong(null) == 0L;
+            }
+        } catch (ReflectiveOperationException ex) {
+            throw VMError.shouldNotReachHere(ex);
         }
     }
 
@@ -516,7 +563,7 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
         if (original == null) {
             /* Optional target that is not present, so nothing to do. */
         } else {
-            register(fieldSubstitutions, annotated, original, annotated);
+            register(fieldSubstitutions, annotated, original, new SubstitutionField(original, annotated));
         }
     }
 
@@ -622,16 +669,29 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
     }
 
     private static boolean isIncluded(TargetElement targetElementAnnotation, Class<?> originalClass, AnnotatedElement annotatedElement) {
-        for (Class<? extends Predicate<Class<?>>> predicateClass : targetElementAnnotation.onlyWith()) {
-            Predicate<Class<?>> predicate;
+        for (Class<?> onlyWithClass : targetElementAnnotation.onlyWith()) {
+            Object onlyWithProvider;
             try {
-                Constructor<? extends Predicate<Class<?>>> constructor = predicateClass.getDeclaredConstructor();
+                Constructor<?> constructor = onlyWithClass.getDeclaredConstructor();
                 constructor.setAccessible(true);
-                predicate = constructor.newInstance();
+                onlyWithProvider = constructor.newInstance();
             } catch (NoSuchMethodException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
-                throw UserError.abort("Class specified as onlyWith for " + annotatedElement + " cannot be loaded or instantiated: " + predicateClass.getTypeName());
+                throw UserError.abort("Class specified as onlyWith for " + annotatedElement + " cannot be loaded or instantiated: " + onlyWithClass.getTypeName());
             }
-            if (!predicate.test(originalClass)) {
+
+            boolean onlyWithResult;
+            if (onlyWithProvider instanceof BooleanSupplier) {
+                onlyWithResult = ((BooleanSupplier) onlyWithProvider).getAsBoolean();
+            } else if (onlyWithProvider instanceof Predicate) {
+                @SuppressWarnings("unchecked")
+                Predicate<Class<?>> onlyWithPredicate = (Predicate<Class<?>>) onlyWithProvider;
+                onlyWithResult = onlyWithPredicate.test(originalClass);
+            } else {
+                throw UserError.abort("Class specified as onlyWith for " + annotatedElement + " does not implement " +
+                                BooleanSupplier.class.getSimpleName() + " or " + Predicate.class.getSimpleName());
+            }
+
+            if (!onlyWithResult) {
                 return false;
             }
         }
@@ -685,6 +745,12 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
         return new ComputedValueField(original, annotated, kind, targetClass, targetName, isFinal);
     }
 
+    private void reinitializeField(Field annotatedField) {
+        ResolvedJavaField annotated = metaAccess.lookupJavaField(annotatedField);
+        ComputedValueField alias = new ComputedValueField(annotated, annotated, Kind.Reset, annotatedField.getDeclaringClass(), "", false);
+        register(fieldSubstitutions, annotated, annotated, alias);
+    }
+
     public Class<?> getTargetClass(Class<?> annotatedClass) {
         Class<?> annotatedBaseClass = annotatedClass;
         int arrayDepth = 0;
@@ -711,20 +777,6 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
     }
 
     Class<?> findTargetClass(Class<?> annotatedBaseClass, TargetClass target) {
-        for (Class<? extends BooleanSupplier> predicateClass : target.onlyWith()) {
-            BooleanSupplier predicate;
-            try {
-                Constructor<? extends BooleanSupplier> constructor = predicateClass.getDeclaredConstructor();
-                constructor.setAccessible(true);
-                predicate = constructor.newInstance();
-            } catch (NoSuchMethodException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
-                throw UserError.abort("Class specified as onlyWith for " + annotatedBaseClass.getTypeName() + " cannot be loaded or instantiated: " + predicateClass.getTypeName());
-            }
-            if (!predicate.getAsBoolean()) {
-                return null;
-            }
-        }
-
         String className;
         if (target.value() != TargetClass.class) {
             guarantee(target.className().isEmpty(), "Both class and class name specified for substitution");
@@ -743,17 +795,47 @@ public class AnnotationSubstitutionProcessor extends SubstitutionProcessor {
             guarantee(!target.className().isEmpty(), "Neither class, className, nor classNameProvider specified for substitution");
             className = target.className();
         }
+
+        for (Class<?> onlyWithClass : target.onlyWith()) {
+            Object onlyWithProvider;
+            try {
+                Constructor<?> constructor = onlyWithClass.getDeclaredConstructor();
+                constructor.setAccessible(true);
+                onlyWithProvider = constructor.newInstance();
+            } catch (NoSuchMethodException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex) {
+                throw UserError.abort("Class specified as onlyWith for " + annotatedBaseClass.getTypeName() + " cannot be loaded or instantiated: " + onlyWithClass.getTypeName());
+            }
+
+            boolean onlyWithResult;
+            if (onlyWithProvider instanceof BooleanSupplier) {
+                onlyWithResult = ((BooleanSupplier) onlyWithProvider).getAsBoolean();
+            } else if (onlyWithProvider instanceof Predicate) {
+                @SuppressWarnings("unchecked")
+                Predicate<String> onlyWithPredicate = (Predicate<String>) onlyWithProvider;
+                onlyWithResult = onlyWithPredicate.test(className);
+            } else {
+                throw UserError.abort("Class specified as onlyWith for " + annotatedBaseClass.getTypeName() + " does not implement " +
+                                BooleanSupplier.class.getSimpleName() + " or " + Predicate.class.getSimpleName());
+            }
+
+            if (!onlyWithResult) {
+                return null;
+            }
+        }
+
         Class<?> holder = imageClassLoader.findClassByName(className, false);
         if (holder == null) {
             throw UserError.abort("substitution target for " + annotatedBaseClass.getName() +
                             " is not loaded. Use field `onlyWith` in the `TargetClass` annotation to make substitution only active when needed.");
         }
-        if (!target.innerClass().isEmpty()) {
-            Class<?> outerClass = holder;
-            holder = findInnerClass(outerClass, target.innerClass());
-            if (holder == null) {
-                throw UserError.abort("substitution target for " + annotatedBaseClass.getName() + " is invalid as inner class " + target.innerClass() + " in " + outerClass.getName() +
-                                " can not be found. Make sure that the inner class is present.");
+        if (target.innerClass().length > 0) {
+            for (String innerClass : target.innerClass()) {
+                Class<?> prevHolder = holder;
+                holder = findInnerClass(prevHolder, innerClass);
+                if (holder == null) {
+                    throw UserError.abort("substitution target for " + annotatedBaseClass.getName() + " is invalid as inner class " + innerClass + " in " + prevHolder.getName() +
+                                    " can not be found. Make sure that the inner class is present.");
+                }
             }
         }
 

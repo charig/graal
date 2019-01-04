@@ -32,6 +32,8 @@ import java.net.NetworkInterface;
 import java.net.SocketException;
 
 import org.graalvm.nativeimage.ImageSingletons;
+import org.graalvm.nativeimage.Platform;
+import org.graalvm.nativeimage.Platforms;
 import org.graalvm.nativeimage.StackValue;
 import org.graalvm.nativeimage.c.struct.SizeOf;
 import org.graalvm.nativeimage.c.type.CCharPointer;
@@ -75,6 +77,7 @@ import com.oracle.svm.core.util.PointerUtils;
 // So one can look at the quoted line numbers on the C code to see which platform
 // the code applies to.
 
+@Platforms({Platform.LINUX.class, Platform.DARWIN.class})
 public class JavaNetNetworkInterface {
 
     /*
@@ -908,7 +911,7 @@ public class JavaNetNetworkInterface {
     // 1058  * proto is AF_INET/AF_INET6
     // 1059  */
     // 1060 static int  openSocket(JNIEnv *env, int proto){
-    static int openSocket(int proto) throws SocketException {
+    public static int openSocket(int proto) throws SocketException {
         // 1061     int sock;
         int sock;
         // 1062
@@ -941,6 +944,7 @@ public class JavaNetNetworkInterface {
         short getSubnet(int sock, CCharPointer ifname) throws SocketException;
         int getFlags(int sock, CCharPointer ifname, CIntPointer flags);
         int getIndex(int sock, CCharPointer name);
+        int getMacAddress(CCharPointer ifname, NetinetIn.in_addr addr, CCharPointer buf) throws SocketException;
     }
 }
 

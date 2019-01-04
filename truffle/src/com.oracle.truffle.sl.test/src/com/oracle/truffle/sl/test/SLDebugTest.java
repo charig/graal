@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * The Universal Permissive License (UPL), Version 1.0
@@ -1096,7 +1096,7 @@ public class SLDebugTest {
                         "<11:25 - 11:25> () 3\n" +
                         "<11:21 - 11:25> (4,3) 7\n" +
                         "<11:10 - 11:26> () 14\n" +
-                        "<6:13 - 6:27> 14\n" +
+                        "<6:13 - 6:27> (transform,4,3) 14\n" +
                         "<6:9 - 6:27> (2,14) -12\n" +
                         "<6:5 - 6:27> (-12) -12\n" +
                         "<3:10 - 3:25> <none>\n" +

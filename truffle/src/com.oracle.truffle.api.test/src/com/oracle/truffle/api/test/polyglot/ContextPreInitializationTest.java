@@ -1,26 +1,42 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.api.test.polyglot;
 
@@ -832,7 +848,7 @@ public class ContextPreInitializationTest {
         assertEquals(0, firstLangCtx.disposeContextCount);
         assertEquals(0, firstLangCtx.initializeThreadCount);
         assertEquals(0, firstLangCtx.disposeThreadCount);
-        Engine.create();
+        Engine.create().close();
         final Context ctx = Context.create();
         Value res = ctx.eval(Source.create(FIRST, "test"));
         assertEquals("test", res.asString());
@@ -859,18 +875,18 @@ public class ContextPreInitializationTest {
     public void testLogging() throws Exception {
         setPatchable(FIRST);
         // In context pre-initialization there is no sdk Context to set log handler,
-        // logging is done to System.out
-        final PrintStream origOut = System.out;
-        final ByteArrayOutputStream preInitOut = new ByteArrayOutputStream();
-        try (PrintStream printStream = new PrintStream(preInitOut)) {
-            System.setOut(printStream);
+        // logging is done to System.err
+        final PrintStream origErr = System.err;
+        final ByteArrayOutputStream preInitErr = new ByteArrayOutputStream();
+        try (PrintStream printStream = new PrintStream(preInitErr)) {
+            System.setErr(printStream);
             System.setProperty("polyglot.log.engine.level", "FINE");
             doContextPreinitialize(FIRST);
         } finally {
-            System.setOut(origOut);
+            System.setErr(origErr);
             System.getProperties().remove("polyglot.log.engine.level");
         }
-        final String preInitLog = preInitOut.toString("UTF-8");
+        final String preInitLog = preInitErr.toString("UTF-8");
         assertTrue(preInitLog.contains("Pre-initialized context for language: ContextPreInitializationFirst"));
         List<CountingContext> contexts = new ArrayList<>(emittedContexts);
         assertEquals(1, contexts.size());
@@ -978,6 +994,7 @@ public class ContextPreInitializationTest {
         final Map<OptionKey<Boolean>, Boolean> optionValues;
         final List<String> arguments;
         String languageHome;
+        boolean preInitialized;
 
         CountingContext(final String id, final TruffleLanguage.Env env) {
             this.id = id;
@@ -1024,12 +1041,15 @@ public class ContextPreInitializationTest {
         protected void initializeContext(CountingContext context) throws Exception {
             context.initializeContextCount++;
             context.initializeContextOrder = nextId();
+            context.preInitialized = context.env.isPreInitialization();
             super.initializeContext(context);
         }
 
         @Override
         protected boolean patchContext(CountingContext context, TruffleLanguage.Env newEnv) {
             assertNotNull(getContextReference().get());
+            assertTrue(context.preInitialized);
+            assertFalse(context.env.isPreInitialization());
             context.patchContextCount++;
             context.patchContextOrder = nextId();
             context.languageHome = getLanguageHome();

@@ -1,26 +1,42 @@
 /*
- * Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2015, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.polyglot;
 
@@ -47,7 +63,7 @@ import com.oracle.truffle.api.interop.UnsupportedTypeException;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.polyglot.PolyglotLanguageContext.ToGuestValueNode;
 
-class PolyglotList<T> extends AbstractList<T> {
+class PolyglotList<T> extends AbstractList<T> implements HostWrapper {
 
     final TruffleObject guestObject;
     final PolyglotLanguageContext languageContext;
@@ -57,6 +73,21 @@ class PolyglotList<T> extends AbstractList<T> {
         this.guestObject = array;
         this.languageContext = languageContext;
         this.cache = Cache.lookup(languageContext, array.getClass(), elementClass, elementType);
+    }
+
+    @Override
+    public Object getGuestObject() {
+        return guestObject;
+    }
+
+    @Override
+    public PolyglotLanguageContext getLanguageContext() {
+        return languageContext;
+    }
+
+    @Override
+    public PolyglotContextImpl getContext() {
+        return languageContext.context;
     }
 
     @TruffleBoundary
@@ -93,28 +124,18 @@ class PolyglotList<T> extends AbstractList<T> {
     }
 
     @Override
+    public String toString() {
+        return HostWrapper.toString(this);
+    }
+
+    @Override
     public int hashCode() {
-        return guestObject.hashCode();
+        return HostWrapper.hashCode(this);
     }
 
     @Override
     public boolean equals(Object o) {
-        if (o == this) {
-            return true;
-        } else if (o instanceof PolyglotList) {
-            return languageContext.context == ((PolyglotList<?>) o).languageContext.context && guestObject.equals(((PolyglotList<?>) o).guestObject);
-        } else {
-            return false;
-        }
-    }
-
-    @Override
-    public String toString() {
-        try {
-            return languageContext.asValue(guestObject).toString();
-        } catch (UnsupportedOperationException e) {
-            return super.toString();
-        }
+        return HostWrapper.equals(this, o);
     }
 
     static final class Cache {
@@ -141,14 +162,14 @@ class PolyglotList<T> extends AbstractList<T> {
         }
 
         private static CallTarget initializeCall(PolyglotListNode node) {
-            return HostEntryRootNode.createTarget(node);
+            return HostRootNode.createTarget(node);
         }
 
         static Cache lookup(PolyglotLanguageContext languageContext, Class<?> receiverClass, Class<?> valueClass, Type valueType) {
             Key cacheKey = new Key(receiverClass, valueClass, valueType);
-            Cache cache = HostEntryRootNode.lookupHostCodeCache(languageContext, cacheKey, Cache.class);
+            Cache cache = HostRootNode.lookupHostCodeCache(languageContext, cacheKey, Cache.class);
             if (cache == null) {
-                cache = HostEntryRootNode.installHostCodeCache(languageContext, cacheKey, new Cache(receiverClass, valueClass, valueType), Cache.class);
+                cache = HostRootNode.installHostCodeCache(languageContext, cacheKey, new Cache(receiverClass, valueClass, valueType), Cache.class);
             }
             assert cache.receiverClass == receiverClass;
             assert cache.valueClass == valueClass;
@@ -186,7 +207,7 @@ class PolyglotList<T> extends AbstractList<T> {
             }
         }
 
-        private abstract static class PolyglotListNode extends HostEntryRootNode<TruffleObject> {
+        private abstract static class PolyglotListNode extends HostRootNode<TruffleObject> {
 
             final Cache cache;
 
@@ -219,7 +240,7 @@ class PolyglotList<T> extends AbstractList<T> {
             }
 
             @Override
-            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject receiver, Object[] args, int offset) {
+            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject receiver, Object[] args) {
                 int size = 0;
                 if (sendHasSize(hasSize, receiver)) {
                     try {
@@ -255,8 +276,8 @@ class PolyglotList<T> extends AbstractList<T> {
             }
 
             @Override
-            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject receiver, Object[] args, int offset) {
-                Object key = args[offset];
+            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject receiver, Object[] args) {
+                Object key = args[ARGUMENT_OFFSET];
                 Object result = null;
                 assert key instanceof Integer;
                 if (sendHasSize(hasSize, receiver)) {
@@ -301,11 +322,11 @@ class PolyglotList<T> extends AbstractList<T> {
             }
 
             @Override
-            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject receiver, Object[] args, int offset) {
-                Object key = args[offset];
+            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject receiver, Object[] args) {
+                Object key = args[ARGUMENT_OFFSET];
                 Object result = null;
                 assert key instanceof Integer;
-                Object originalValue = args[offset + 1];
+                Object originalValue = args[ARGUMENT_OFFSET + 1];
                 Object value = toGuest.apply(languageContext, originalValue);
                 if (sendHasSize(hasSize, receiver)) {
                     if (KeyInfo.isWritable(sendKeyInfo(keyInfo, receiver, key))) {
@@ -348,8 +369,8 @@ class PolyglotList<T> extends AbstractList<T> {
             }
 
             @Override
-            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject receiver, Object[] args, int offset) {
-                Object key = args[offset];
+            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject receiver, Object[] args) {
+                Object key = args[ARGUMENT_OFFSET];
                 Object result = null;
                 assert key instanceof Integer;
                 if (sendHasSize(hasSize, receiver)) {
@@ -391,8 +412,8 @@ class PolyglotList<T> extends AbstractList<T> {
             }
 
             @Override
-            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject function, Object[] args, int offset) {
-                return apply.execute(languageContext, function, args[offset], Object.class, Object.class);
+            protected Object executeImpl(PolyglotLanguageContext languageContext, TruffleObject function, Object[] args) {
+                return apply.execute(languageContext, function, args[ARGUMENT_OFFSET], Object.class, Object.class);
             }
         }
     }

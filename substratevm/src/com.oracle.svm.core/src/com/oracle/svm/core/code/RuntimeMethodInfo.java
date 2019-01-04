@@ -31,10 +31,12 @@ import java.lang.ref.WeakReference;
 import org.graalvm.nativeimage.c.function.CodePointer;
 import org.graalvm.word.UnsignedWord;
 
+import com.oracle.svm.core.annotate.Uninterruptible;
 import com.oracle.svm.core.annotate.UnknownObjectField;
 import com.oracle.svm.core.deopt.SubstrateInstalledCode;
 import com.oracle.svm.core.heap.ObjectReferenceWalker;
 import com.oracle.svm.core.heap.PinnedAllocator;
+import com.oracle.svm.core.os.CommittedMemoryProvider;
 
 import jdk.vm.ci.code.InstalledCode;
 
@@ -49,6 +51,10 @@ public final class RuntimeMethodInfo extends AbstractCodeInfo {
         return name;
     }
 
+    public int getTier() {
+        return tier;
+    }
+
     /**
      * The {@link InstalledCode#getName() name of the InstalledCode}. Stored in a separate field so
      * that it is available even after the code is no longer available.
@@ -57,6 +63,11 @@ public final class RuntimeMethodInfo extends AbstractCodeInfo {
      * accessed during garbage collection.
      */
     protected String name;
+
+    /**
+     * The index of the compilation tier that was used to compile the respective code.
+     */
+    protected int tier;
 
     /**
      * The handle to the compiled code for the outside world. We only have a weak reference to it,
@@ -88,11 +99,12 @@ public final class RuntimeMethodInfo extends AbstractCodeInfo {
         throw shouldNotReachHere("Must be allocated with PinnedAllocator");
     }
 
-    public void setData(CodePointer codeStart, UnsignedWord codeSize, SubstrateInstalledCode installedCode, ObjectReferenceWalker constantsWalker, PinnedAllocator allocator,
+    public void setData(CodePointer codeStart, UnsignedWord codeSize, SubstrateInstalledCode installedCode, int tier, ObjectReferenceWalker constantsWalker, PinnedAllocator allocator,
                     InstalledCodeObserver.InstalledCodeObserverHandle[] codeObserverHandles) {
         super.setData(codeStart, codeSize);
         this.name = installedCode.getName();
         this.installedCode = createInstalledCodeReference(installedCode);
+        this.tier = tier;
         this.constantsWalker = constantsWalker;
         this.allocator = allocator;
         assert codeObserverHandles != null;
@@ -101,5 +113,10 @@ public final class RuntimeMethodInfo extends AbstractCodeInfo {
 
     private static WeakReference<SubstrateInstalledCode> createInstalledCodeReference(SubstrateInstalledCode installedCode) {
         return new WeakReference<>(installedCode);
+    }
+
+    @Uninterruptible(reason = "Called from uninterruptible code", mayBeInlined = true)
+    void freeInstalledCode() {
+        CommittedMemoryProvider.get().free(getCodeStart(), getCodeSize(), CommittedMemoryProvider.UNALIGNED, true);
     }
 }

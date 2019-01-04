@@ -33,6 +33,7 @@ import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.regex.result.RegexResult;
 import com.oracle.truffle.regex.runtime.RegexObjectExecMethod;
 import com.oracle.truffle.regex.runtime.RegexObjectMessageResolutionForeign;
+import com.oracle.truffle.regex.tregex.parser.flavors.PythonFlags;
 import com.oracle.truffle.regex.util.TruffleNull;
 import com.oracle.truffle.regex.util.TruffleReadOnlyMap;
 
@@ -42,7 +43,12 @@ import com.oracle.truffle.regex.util.TruffleReadOnlyMap;
  * three properties:
  * <ol>
  * <li>{@link String} {@code pattern}: the source of the compiled regular expression</li>
- * <li>{@link RegexFlags} {@code flags}: the set of flags passed to the regular expression compiler
+ * <li>{@link TruffleObject} {@code flags}: the set of flags passed to the regular expression
+ * compiler. The type differs based on the flavor of regular expressions used:
+ * <ul>
+ * <li>{@link RegexFlags} if the flavor was {@code ECMAScript}</li>
+ * <li>{@link PythonFlags} if the flavor was {@code PythonStr} or {@code PythonBytes}</li>
+ * </ul>
  * </li>
  * <li>{@link RegexObjectExecMethod} {@code exec}: an executable method that matches the compiled
  * regular expression against a string. The method accepts two parameters:
@@ -65,17 +71,29 @@ public class RegexObject implements RegexLanguageObject {
 
     private final RegexCompiler compiler;
     private final RegexSource source;
+    private final TruffleObject flags;
+    private final boolean unicodePattern;
     private final TruffleObject namedCaptureGroups;
     private TruffleObject compiledRegexObject;
 
-    public RegexObject(RegexCompiler compiler, RegexSource source, Map<String, Integer> namedCaptureGroups) {
+    public RegexObject(RegexCompiler compiler, RegexSource source, TruffleObject flags, boolean unicodePattern, Map<String, Integer> namedCaptureGroups) {
         this.compiler = compiler;
         this.source = source;
+        this.flags = flags;
+        this.unicodePattern = unicodePattern;
         this.namedCaptureGroups = namedCaptureGroups != null ? new TruffleReadOnlyMap(namedCaptureGroups) : TruffleNull.INSTANCE;
     }
 
     public RegexSource getSource() {
         return source;
+    }
+
+    public TruffleObject getFlags() {
+        return flags;
+    }
+
+    public boolean isUnicodePattern() {
+        return unicodePattern;
     }
 
     public TruffleObject getNamedCaptureGroups() {

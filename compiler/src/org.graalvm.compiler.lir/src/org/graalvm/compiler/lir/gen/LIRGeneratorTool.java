@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2011, 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2011, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -24,6 +24,9 @@
  */
 package org.graalvm.compiler.lir.gen;
 
+import java.util.BitSet;
+import java.util.List;
+
 import org.graalvm.compiler.core.common.CompressEncoding;
 import org.graalvm.compiler.core.common.LIRKind;
 import org.graalvm.compiler.core.common.calc.Condition;
@@ -39,11 +42,13 @@ import org.graalvm.compiler.lir.LIRInstruction;
 import org.graalvm.compiler.lir.LabelRef;
 import org.graalvm.compiler.lir.SwitchStrategy;
 import org.graalvm.compiler.lir.Variable;
+import org.graalvm.compiler.lir.VirtualStackSlot;
 
 import jdk.vm.ci.code.CodeCacheProvider;
 import jdk.vm.ci.code.Register;
 import jdk.vm.ci.code.RegisterAttributes;
 import jdk.vm.ci.code.RegisterConfig;
+import jdk.vm.ci.code.StackSlot;
 import jdk.vm.ci.code.TargetDescription;
 import jdk.vm.ci.code.ValueKindFactory;
 import jdk.vm.ci.meta.AllocatableValue;
@@ -60,7 +65,7 @@ public interface LIRGeneratorTool extends DiagnosticLIRGeneratorTool, ValueKindF
     /**
      * Factory for creating moves.
      */
-    public interface MoveFactory {
+    interface MoveFactory {
 
         /**
          * Checks whether the supplied constant can be used without loading it into a register for
@@ -261,16 +266,36 @@ public interface LIRGeneratorTool extends DiagnosticLIRGeneratorTool, ValueKindF
         throw GraalError.unimplemented("String.compareTo substitution is not implemented on this architecture");
     }
 
-    Variable emitArrayEquals(JavaKind kind, Value array1, Value array2, Value length);
+    Variable emitArrayEquals(JavaKind kind, Value array1, Value array2, Value length, int constantLength, boolean directPointers);
 
     @SuppressWarnings("unused")
-    default Variable emitStringIndexOf(Value sourcePointer, Value sourceCount, Value targetPointer, Value targetCount, int constantTargetCount) {
-        throw GraalError.unimplemented("String.indexOf substitution is not implemented on this architecture");
+    default Variable emitArrayEquals(JavaKind kind1, JavaKind kind2, Value array1, Value array2, Value length, int constantLength, boolean directPointers) {
+        throw GraalError.unimplemented("Array.equals with different types substitution is not implemented on this architecture");
     }
 
     @SuppressWarnings("unused")
-    default Variable emitArrayIndexOf(JavaKind kind, Value sourcePointer, Value sourceCount, Value charValue) {
+    default Variable emitArrayIndexOf(JavaKind kind, boolean findTwoConsecutive, Value sourcePointer, Value sourceCount, Value... searchValues) {
         throw GraalError.unimplemented("String.indexOf substitution is not implemented on this architecture");
+    }
+
+    /*
+     * The routines emitStringLatin1Inflate/3 and emitStringUTF16Compress/3 models a simplified
+     * version of
+     *
+     * emitStringLatin1Inflate(Value src, Value src_ndx, Value dst, Value dst_ndx, Value len) and
+     * emitStringUTF16Compress(Value src, Value src_ndx, Value dst, Value dst_ndx, Value len)
+     *
+     * respectively, where we have hoisted the offset address computations in a method replacement
+     * snippet.
+     */
+    @SuppressWarnings("unused")
+    default void emitStringLatin1Inflate(Value src, Value dst, Value len) {
+        throw GraalError.unimplemented("StringLatin1.inflate substitution is not implemented on this architecture");
+    }
+
+    @SuppressWarnings("unused")
+    default Variable emitStringUTF16Compress(Value src, Value dst, Value len) {
+        throw GraalError.unimplemented("StringUTF16.compress substitution is not implemented on this architecture");
     }
 
     void emitBlackhole(Value operand);
@@ -292,4 +317,32 @@ public interface LIRGeneratorTool extends DiagnosticLIRGeneratorTool, ValueKindF
     default void emitConvertZeroToNull(AllocatableValue result, Value input) {
         emitMove(result, input);
     }
+
+    /**
+     * Emits an instruction that prevents speculative execution from proceeding: no instruction
+     * after this fence will execute until all previous instructions have retired.
+     */
+    void emitSpeculationFence();
+
+    default VirtualStackSlot allocateStackSlots(int slots, BitSet objects, List<VirtualStackSlot> outObjectStackSlots) {
+        return getResult().getFrameMapBuilder().allocateStackSlots(slots, objects, outObjectStackSlots);
+    }
+
+    default Value emitReadCallerStackPointer(Stamp wordStamp) {
+        /*
+         * We do not know the frame size yet. So we load the address of the first spill slot
+         * relative to the beginning of the frame, which is equivalent to the stack pointer of the
+         * caller.
+         */
+        return emitAddress(StackSlot.get(getLIRKind(wordStamp), 0, true));
+    }
+
+    default Value emitReadReturnAddress(Stamp wordStamp, int returnAddressSize) {
+        return emitMove(StackSlot.get(getLIRKind(wordStamp), -returnAddressSize, true));
+    }
+
+    default void emitThrow(@SuppressWarnings("unused") Value exception) {
+        throw GraalError.unimplemented("Throw is not implemented for this compiler backend");
+    }
+
 }

@@ -24,8 +24,6 @@
  */
 package com.oracle.svm.hosted.phases;
 
-import static org.graalvm.compiler.bytecode.Bytecodes.NEW;
-
 import org.graalvm.compiler.core.common.calc.Condition;
 import org.graalvm.compiler.core.common.spi.ConstantFieldProvider;
 import org.graalvm.compiler.core.common.type.StampPair;
@@ -43,12 +41,13 @@ import org.graalvm.compiler.nodes.spi.StampProvider;
 import org.graalvm.compiler.phases.OptimisticOptimizations;
 import org.graalvm.compiler.word.WordTypes;
 
-import com.oracle.graal.pointsto.infrastructure.WrappedConstantPool;
+import com.oracle.graal.pointsto.constraints.UnresolvedElementException;
 import com.oracle.graal.pointsto.meta.AnalysisMetaAccess;
-import com.oracle.graal.pointsto.util.AnalysisError;
 import com.oracle.svm.core.meta.SubstrateObjectConstant;
+import com.oracle.svm.core.option.SubstrateOptionsParser;
 import com.oracle.svm.core.util.UserError;
 import com.oracle.svm.core.util.UserError.UserException;
+import com.oracle.svm.hosted.ExceptionSynthesizer;
 import com.oracle.svm.hosted.HostedConfiguration;
 import com.oracle.svm.hosted.NativeImageOptions;
 
@@ -97,13 +96,12 @@ public abstract class SharedGraphBuilderPhase extends GraphBuilderPhase.Instance
         protected void maybeEagerlyResolve(int cpi, int bytecode) {
             try {
                 super.maybeEagerlyResolve(cpi, bytecode);
-            } catch (Exception e) {
-                if (NativeImageOptions.ReportUnsupportedElementsAtRuntime.getValue()) {
+            } catch (UnresolvedElementException e) {
+                if (e.getCause() instanceof NoClassDefFoundError) {
                     /*
-                     * Silently ignore type resolution exceptions for eagerly resolved types. When
-                     * ReportUnsupportedElementsAtRuntime is enabled the resolution mechanism
-                     * bellow, e.g., in genInvokeStatic(), will insert DeoptimizeNode when
-                     * resolution fails such that the resolution errors are reported at runtime.
+                     * Ignore NoClassDefFoundError if thrown from eager resolution attempt. This is
+                     * usually followed by a call to ConstantPool.lookupType() which should return
+                     * an UnresolvedJavaType which we know how to deal with.
                      */
                 } else {
                     throw e;
@@ -111,188 +109,110 @@ public abstract class SharedGraphBuilderPhase extends GraphBuilderPhase.Instance
             }
         }
 
-        /**
-         * Lookup a method that failed to resolve. If the lookup would go through the usual
-         * ConstantPool.lookupMethod() it could fail in the WrappedConstantPool.lookupMethod().
-         * Although the WrappedConstantPool.lookupMethod() can return unresolved methods the
-         * resolution might still fail in Universe.lookup() if the method has unresolved signature
-         * types, i.e., return and parameter types . By using
-         * WrappedConstantPool.lookupMethodInWrapped() the lookup is dispatched to the lowest level
-         * of wrapped pool, i.e., the HotSpotConstantPool, where the unresolved method can be found.
-         */
-        private JavaMethod lookupFailedResolutionMethod(int cpi, int opcode) {
-            assert constantPool instanceof WrappedConstantPool;
-            JavaMethod target = ((WrappedConstantPool) constantPool).lookupMethodInWrapped(cpi, opcode);
-            return target;
+        @Override
+        protected void handleUnresolvedNewInstance(JavaType type) {
+            handleUnresolvedType(type);
         }
 
-        private JavaType lookupFailedResolutionType(int cpi, int opcode) {
-            assert constantPool instanceof WrappedConstantPool;
-            JavaType target = ((WrappedConstantPool) constantPool).lookupTypeInWrapped(cpi, opcode);
-            return target;
+        @Override
+        protected void handleUnresolvedNewObjectArray(JavaType type, ValueNode length) {
+            handleUnresolvedType(type);
         }
 
-        private JavaField lookupFailedResolutionField(int cpi, ResolvedJavaMethod lookupMethod, int opcode) {
-            assert constantPool instanceof WrappedConstantPool;
-            JavaField target = ((WrappedConstantPool) constantPool).lookupFieldInWrapped(cpi, lookupMethod, opcode);
-            return target;
+        @Override
+        protected void handleUnresolvedNewMultiArray(JavaType type, ValueNode[] dims) {
+            handleUnresolvedType(type.getElementalType());
         }
 
-        private void handleMethodResolutionError(LinkageError e, int cpi, int opcode, InvokeKind invokeKind) {
-            if (NativeImageOptions.ReportUnsupportedElementsAtRuntime.getValue()) {
+        @Override
+        protected void handleUnresolvedInstanceOf(JavaType type, ValueNode object) {
+            handleUnresolvedType(type);
+        }
+
+        @Override
+        protected void handleUnresolvedCheckCast(JavaType type, ValueNode object) {
+            handleUnresolvedType(type);
+        }
+
+        @Override
+        protected void handleUnresolvedLoadConstant(JavaType type) {
+            handleUnresolvedType(type);
+        }
+
+        @Override
+        protected void handleUnresolvedExceptionType(JavaType type) {
+            handleUnresolvedType(type);
+        }
+
+        @Override
+        protected void handleUnresolvedStoreField(JavaField field, ValueNode value, ValueNode receiver) {
+            handleUnresolvedField(field);
+        }
+
+        @Override
+        protected void handleUnresolvedLoadField(JavaField field, ValueNode receiver) {
+            handleUnresolvedField(field);
+        }
+
+        @Override
+        protected void handleUnresolvedInvoke(JavaMethod javaMethod, InvokeKind invokeKind) {
+            handleUnresolvedMethod(javaMethod);
+        }
+
+        private void handleUnresolvedType(JavaType type) {
+            /*
+             * If --allow-incomplete-classpath is set defer the error reporting to runtime,
+             * otherwise report the error during image building.
+             */
+            if (NativeImageOptions.AllowIncompleteClasspath.getValue()) {
+                ExceptionSynthesizer.throwNoClassDefFoundError(this, type.toJavaName());
+            } else {
+                reportUnresolvedElement("type", type.toJavaName());
+            }
+        }
+
+        private void handleUnresolvedField(JavaField field) {
+            JavaType declaringClass = field.getDeclaringClass();
+            if (!typeIsResolved(declaringClass)) {
+                /* The field could not be resolved because its declaring class is missing. */
+                handleUnresolvedType(declaringClass);
+            } else {
                 /*
-                 * During method resolution, even if the method is resolved, we might fail while
-                 * trying to resolve the method signature types, i.e, return and parameter types.
-                 * When we inquire to JVMCI level about method properties, e.g., annotations,
-                 * HotSpotResolvedJavaMethodImpl.toJava() tries to create the method signature
-                 * assuming resolved parameter/return types. If that happens, we just treat the
-                 * called method itself as unresolved. When DeoptimizeNode will offer more context
-                 * information we can attach the actual reason.
-                 *
-                 * Important note: trying to resolve the method in the HotSpotPool, i.e., by calling
-                 * lookupFailedResolutionMethod(), will return a ResolvedJavaMethod even for a
-                 * method having unresolved return/parameter types, thus instead of handing it to
-                 * super.genInvokeStatic() we just short circuit the parsing and insert a
-                 * DeoptimizeNode here!
+                 * If --allow-incomplete-classpath is set defer the error reporting to runtime,
+                 * otherwise report the error during image building.
                  */
-                JavaMethod target = lookupFailedResolutionMethod(cpi, opcode);
-                handleUnresolvedInvoke(target, invokeKind);
-                return;
-            }
-            throw e;
-        }
-
-        @Override
-        protected void genInvokeStatic(int cpi, int opcode) {
-            try {
-                super.genInvokeStatic(cpi, opcode);
-            } catch (LinkageError e) {
-                handleMethodResolutionError(e, cpi, opcode, InvokeKind.Static);
-            }
-        }
-
-        @Override
-        protected void genInvokeVirtual(int cpi, int opcode) {
-            try {
-                super.genInvokeVirtual(cpi, opcode);
-            } catch (LinkageError e) {
-                handleMethodResolutionError(e, cpi, opcode, InvokeKind.Virtual);
-            }
-        }
-
-        @Override
-        protected void genInvokeSpecial(int cpi, int opcode) {
-            try {
-                super.genInvokeSpecial(cpi, opcode);
-            } catch (LinkageError e) {
-                handleMethodResolutionError(e, cpi, opcode, InvokeKind.Special);
-            }
-        }
-
-        @Override
-        protected void genInvokeDynamic(int cpi, int opcode) {
-            try {
-                super.genInvokeDynamic(cpi, opcode);
-            } catch (LinkageError e) {
-                handleMethodResolutionError(e, cpi, opcode, InvokeKind.Static);
-            }
-        }
-
-        @Override
-        protected void genNewInstance(int cpi) {
-            try {
-                super.genNewInstance(cpi);
-            } catch (LinkageError e) {
-                if (NativeImageOptions.ReportUnsupportedElementsAtRuntime.getValue()) {
-                    JavaType target = lookupFailedResolutionType(cpi, NEW);
-                    handleUnresolvedNewInstance(target);
-                    return;
-                }
-                throw e;
-            }
-        }
-
-        @Override
-        protected JavaType lookupType(int cpi, int bytecode) {
-            try {
-                return super.lookupType(cpi, bytecode);
-            } catch (LinkageError e) {
-                if (NativeImageOptions.ReportUnsupportedElementsAtRuntime.getValue()) {
-                    /* The caller knows how do deal with unresolved types. */
-                    return null;
-                }
-                throw e;
-            }
-        }
-
-        private boolean handleStoreFieldResolutionError(int cpi, int opcode) {
-            if (NativeImageOptions.ReportUnsupportedElementsAtRuntime.getValue()) {
-                JavaField target = lookupFailedResolutionField(cpi, method, opcode);
-                handleUnresolvedStoreField(target, null, null);
-                return true;
-            }
-            return false;
-        }
-
-        private void handleLoadFieldResolutionError(LinkageError e, int cpi, int opcode, ValueNode receiverInput) {
-            if (NativeImageOptions.ReportUnsupportedElementsAtRuntime.getValue()) {
-                JavaField target = lookupFailedResolutionField(cpi, method, opcode);
-                handleUnresolvedLoadField(target, receiverInput);
-                return;
-            }
-            throw e;
-        }
-
-        @Override
-        protected void genGetField(int cpi, int opcode, ValueNode receiverInput) {
-            try {
-                super.genGetField(cpi, opcode, receiverInput);
-            } catch (LinkageError e) {
-                handleLoadFieldResolutionError(e, cpi, opcode, receiverInput);
-            }
-        }
-
-        @Override
-        protected void genPutField(int cpi, int opcode) {
-            try {
-                JavaField field = lookupField(cpi, opcode);
-                if (field == null) {
-                    handleStoreFieldResolutionError(cpi, opcode);
+                if (NativeImageOptions.AllowIncompleteClasspath.getValue()) {
+                    ExceptionSynthesizer.throwNoSuchFieldError(this, field.format("%H.%n"));
                 } else {
-                    genPutField(field);
+                    reportUnresolvedElement("field", field.format("%H.%n"));
                 }
-            } catch (LinkageError e) {
-                if (handleStoreFieldResolutionError(cpi, opcode)) {
-                    return;
-                }
-                throw e;
             }
         }
 
-        @Override
-        protected void genGetStatic(int cpi, int opcode) {
-            try {
-                super.genGetStatic(cpi, opcode);
-            } catch (LinkageError e) {
-                handleLoadFieldResolutionError(e, cpi, opcode, null);
-            }
-        }
-
-        @Override
-        protected void genPutStatic(int cpi, int opcode) {
-            try {
-                JavaField field = lookupField(cpi, opcode);
-                if (field == null) {
-                    handleStoreFieldResolutionError(cpi, opcode);
+        private void handleUnresolvedMethod(JavaMethod javaMethod) {
+            JavaType declaringClass = javaMethod.getDeclaringClass();
+            if (!typeIsResolved(declaringClass)) {
+                /* The method could not be resolved because its declaring class is missing. */
+                handleUnresolvedType(declaringClass);
+            } else {
+                /*
+                 * If --allow-incomplete-classpath is set defer the error reporting to runtime,
+                 * otherwise report the error during image building.
+                 */
+                if (NativeImageOptions.AllowIncompleteClasspath.getValue()) {
+                    ExceptionSynthesizer.throwNoSuchMethodError(this, javaMethod.format("%H.%n(%P)"));
                 } else {
-                    genPutStatic(field);
+                    reportUnresolvedElement("method", javaMethod.format("%H.%n(%P)"));
                 }
-            } catch (LinkageError e) {
-                if (handleStoreFieldResolutionError(cpi, opcode)) {
-                    return;
-                }
-                throw e;
             }
+        }
+
+        private static void reportUnresolvedElement(String elementKind, String elementAsString) {
+            String message = "Discovered unresolved " + elementKind + " during parsing: " + elementAsString +
+                            ". To diagnose the issue you can use the " +
+                            SubstrateOptionsParser.commandArgument(NativeImageOptions.AllowIncompleteClasspath, "+") +
+                            " option. The missing " + elementKind + " is then reported at run time when it is accessed the first time.";
+            throw new UnresolvedElementException(message);
         }
 
         @Override
@@ -350,42 +270,15 @@ public abstract class SharedGraphBuilderPhase extends GraphBuilderPhase.Instance
             super.genReturn(returnVal, returnKind);
         }
 
-        @Override
-        protected void genLoadConstant(int cpi, int opcode) {
-            try {
-                super.genLoadConstant(cpi, opcode);
-            } catch (LinkageError | AnalysisError.TypeNotFoundError e) {
-                /*
-                 * If the constant is a Class object that references a missing class, e.g., declares
-                 * a constructor with a parameter of the missing class, the lookup can lead to
-                 * linkage errors.
-                 * 
-                 * During analysis parsing the lookup will lead to a NoClassDefFoundError when the
-                 * AnalysisType is initialized since we eagerly try to resolve all the referenced
-                 * classes, e.g., we call wrapped.getDeclaredConstructors() in the AnalysisType
-                 * constructor.
-                 * 
-                 * During compilation parsing, since the type represented by the constant was not
-                 * created during analysis, the lookup will lead to an
-                 * AnalysisError.TypeNotFoundError.
-                 */
-                if (NativeImageOptions.ReportUnsupportedElementsAtRuntime.getValue()) {
-                    handleUnresolvedLoadConstant(null);
-                    return;
-                }
-                throw e;
-            }
-        }
-
         private void checkWordType(ValueNode value, JavaType expectedType, String reason) {
             if (expectedType.getJavaKind() == JavaKind.Object) {
                 boolean isWordTypeExpected = getWordTypes().isWord(expectedType);
                 boolean isWordValue = value.getStackKind() == getWordTypes().getWordKind();
 
                 if (isWordTypeExpected && !isWordValue) {
-                    throw UserError.abort("Expected Word but got Object for " + reason + " at " + method.format("%H.%n(%p)") + " in " + method.asStackTraceElement(bci()));
+                    throw UserError.abort("Expected Word but got Object for " + reason + " in " + method.asStackTraceElement(bci()));
                 } else if (!isWordTypeExpected && isWordValue) {
-                    throw UserError.abort("Expected Object but got Word for " + reason + " at " + method.format("%H.%n(%p)") + " in " + method.asStackTraceElement(bci()));
+                    throw UserError.abort("Expected Object but got Word for " + reason + " in " + method.asStackTraceElement(bci()));
                 }
             }
         }

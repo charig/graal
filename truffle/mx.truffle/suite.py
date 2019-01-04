@@ -1,22 +1,63 @@
+#
+# Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
+# DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+#
+# The Universal Permissive License (UPL), Version 1.0
+#
+# Subject to the condition set forth below, permission is hereby granted to any
+# person obtaining a copy of this software, associated documentation and/or
+# data (collectively the "Software"), free of charge and under any and all
+# copyright rights in the Software, and any and all patent rights owned or
+# freely licensable by each licensor hereunder covering either (i) the
+# unmodified Software as contributed to or provided by such licensor, or (ii)
+# the Larger Works (as defined below), to deal in both
+#
+# (a) the Software, and
+#
+# (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+# one is included with the Software each a "Larger Work" to which the Software
+# is contributed by such licensors),
+#
+# without restriction, including without limitation the rights to copy, create
+# derivative works of, display, perform, and distribute the Software and make,
+# use, sell, offer for sale, import, export, have made, and have sold the
+# Software and the Larger Work(s), and to sublicense the foregoing rights on
+# either these or other terms.
+#
+# This license is subject to the following condition:
+#
+# The above copyright notice and either this complete permission notice or at a
+# minimum a reference to the UPL must be included in all copies or substantial
+# portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+#
 suite = {
-  "mxversion" : "5.178.0",
+  "mxversion" : "5.189.0",
   "name" : "truffle",
-  "version": "1.0.0-rc6",
+  "version": "1.0.0-rc10",
   "release" : False,
+  "groupId" : "org.graalvm.truffle",
   "sourceinprojectwhitelist" : [],
   "url" : "http://openjdk.java.net/projects/graal",
   "developer" : {
     "name" : "Truffle and Graal developers",
     "email" : "graal-dev@openjdk.java.net",
     "organization" : "Graal",
-    "organizationUrl" : "http://openjdk.java.net/projects/graal",
+    "organizationUrl" : "https://github.com/oracle/graal",
   },
   "scm" : {
     "url" : "https://github.com/oracle/graal/tree/master/truffle",
     "read" : "https://github.com/oracle/graal.git",
     "write" : "git@github.com:oracle/graal.git",
   },
-  "defaultLicense" : "GPLv2-CPE",
+  "defaultLicense" : "UPL",
   "imports" : {
     "suites": [
       {
@@ -50,20 +91,20 @@ suite = {
     },
 
     "ANTLR4": {
-      "sha1" : "30b13b7efc55b7feea667691509cf59902375001",
+      "sha1" : "946f8aa9daa917dd81a8b818111bec7e288f821a",
       "maven" : {
         "groupId" : "org.antlr",
         "artifactId" : "antlr4-runtime",
-        "version" : "4.7",
+        "version" : "4.7.1",
       }
     },
 
     "ANTLR4_COMPLETE": {
       "urls": [
-        "https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/antlr-4.7-complete.jar",
-        "http://www.antlr.org/download/antlr-4.7-complete.jar"
+        "https://lafo.ssw.uni-linz.ac.at/pub/graal-external-deps/antlr-4.7.1-complete.jar",
+        "http://www.antlr.org/download/antlr-4.7.1-complete.jar"
       ],
-      "sha1": "5b3a8824334069979a0862ce67ede796c3a4d1b1",
+      "sha1": "90aa8308da72ae610207d8f6ca27736921be692a",
     },
   },
   "snippetsPattern" : ".*(Snippets|doc-files).*",
@@ -202,7 +243,6 @@ suite = {
       "checkstyle" : "com.oracle.truffle.sl",
       "javaCompliance" : "8+",
       "workingSets" : "SimpleLanguage,Test",
-      "license" : "UPL",
     },
 
     "com.oracle.truffle.dsl.processor" : {
@@ -211,7 +251,7 @@ suite = {
       "dependencies" : [
         "com.oracle.truffle.api.dsl",
         "com.oracle.truffle.api.instrumentation",
-        "ANTLR4"
+        "truffle:ANTLR4"
       ],
       "checkstyle" : "com.oracle.truffle.dsl.processor",
       "javaCompliance" : "8+",
@@ -235,7 +275,6 @@ suite = {
       "checkstyle" : "com.oracle.truffle.dsl.processor",
       "javaCompliance" : "9+",
       "multiReleaseJarVersion" : "9",
-      "checkstyleVersion" : "8.8",
       "imports" : [
         "com.sun.tools.javac.processing",
         "com.sun.tools.javac.model",
@@ -508,6 +547,18 @@ suite = {
       "javaCompliance" : "8+",
       "annotationProcessors" : ["TRUFFLE_DSL_PROCESSOR_INTEROP_INTERNAL"],
       "workingSets" : "Truffle",
+      "os_arch" : {
+        "windows" : {
+          "<others>" : {
+            "ignore" : "windows is not supported",  # necessary until Truffle is fully supported (GR-7941)
+          },
+        },
+        "<others>" : {
+          "<others>" : {
+            "ignore" : False,
+          },
+        },
+      },
     },
 
     "com.oracle.truffle.nfi.types" : {
@@ -548,6 +599,7 @@ suite = {
         "mx:JUNIT",
         "TRUFFLE_NFI",
         "TRUFFLE_TCK",
+        "TRUFFLE_TEST_NATIVE",
       ],
       "checkstyle" : "com.oracle.truffle.api",
       "javaCompliance" : "8+",
@@ -582,13 +634,12 @@ suite = {
       "sourceDirs" : ["src"],
       "dependencies" : [
         "TRUFFLE_API",
-        "ANTLR4"
+        "truffle:ANTLR4"
       ],
       "javaCompliance" : "8+",
       "checkstyleVersion" : "8.8",
       "annotationProcessors" : ["TRUFFLE_DSL_PROCESSOR"],
       "workingSets" : "Truffle,SimpleLanguage",
-      "license" : "UPL",
     },
 
     "com.oracle.truffle.sl.launcher" : {
@@ -597,9 +648,9 @@ suite = {
       "dependencies" : [
         "sdk:GRAAL_SDK",
       ],
+      "checkstyle" : "com.oracle.truffle.sl",
       "javaCompliance" : "8+",
       "workingSets" : "Truffle,SimpleLanguage",
-      "license" : "UPL",
     },
 
     "com.oracle.truffle.sl.test" : {
@@ -614,7 +665,6 @@ suite = {
       "javaCompliance" : "8+",
       "workingSets" : "Truffle,SimpleLanguage,Test",
       "annotationProcessors" : ["TRUFFLE_DSL_PROCESSOR", "mx:JMH_1_21"],
-      "license" : "UPL",
       "testProject" : True,
     },
    },
@@ -632,7 +682,7 @@ suite = {
 
     "TRUFFLE_API" : {
       # This distribution defines a module.
-      "moduleName" : "com.oracle.truffle.truffle_api",
+      "moduleName" : "org.graalvm.truffle",
       "subDir" : "src",
       "javaCompliance" : "8+",
       "dependencies" : [
@@ -668,7 +718,6 @@ suite = {
       },
       "description" : """Native function interface for the Truffle framework.""",
       "allowsJavadocWarnings": True,
-      "maven" : False,
     },
 
     "TRUFFLE_NFI_NATIVE" : {
@@ -683,7 +732,8 @@ suite = {
       "dependencies" : [
         "com.oracle.truffle.nfi.native",
       ],
-      "maven" : False,
+      "description" : """Contains the native library needed by truffle-nfi.""",
+      "maven": True,
     },
 
     "TRUFFLE_TCK" : {
@@ -763,7 +813,7 @@ suite = {
 
     "TRUFFLE_DSL_PROCESSOR" : {
       "subDir" : "src",
-      "dependencies" : ["com.oracle.truffle.dsl.processor", "com.oracle.truffle.dsl.processor.interop", "com.oracle.truffle.object.dsl.processor", "com.oracle.truffle.dsl.processor.jdk9", "ANTLR4"],
+      "dependencies" : ["com.oracle.truffle.dsl.processor", "com.oracle.truffle.dsl.processor.interop", "com.oracle.truffle.object.dsl.processor", "com.oracle.truffle.dsl.processor.jdk9", "truffle:ANTLR4"],
       "distDependencies" : ["TRUFFLE_API"],
       "description" : "The Truffle DSL Processor generates source code for nodes that are declared using the DSL.",
       "allowsJavadocWarnings": True,
@@ -777,13 +827,12 @@ suite = {
       ],
       "exclude" : [
         "mx:JUNIT",
-        "ANTLR4",
+        "truffle:ANTLR4",
       ],
       "distDependencies" : [
           "TRUFFLE_API",
           "TRUFFLE_TCK",
       ],
-      "license" : "UPL",
       "description" : "Truffle SL is an example language implemented using the Truffle API.",
       "allowsJavadocWarnings": True,
     },
@@ -797,7 +846,6 @@ suite = {
       "distDependencies" : [
           "sdk:GRAAL_SDK",
       ],
-      "license" : "UPL",
       "description" : "Truffle SL launchers using the polyglot API.",
       "allowsJavadocWarnings": True,
     },
@@ -817,7 +865,6 @@ suite = {
           "TRUFFLE_TCK",
           "TRUFFLE_SL"
       ],
-      "license" : "UPL",
       "maven" : False
     },
 
@@ -833,7 +880,6 @@ suite = {
       "distDependencies" : [
         "sdk:POLYGLOT_TCK"
       ],
-      "license" : "UPL",
       "maven" : False
     },
 

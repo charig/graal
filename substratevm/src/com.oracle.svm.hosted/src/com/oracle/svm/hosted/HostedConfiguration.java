@@ -39,7 +39,7 @@ import com.oracle.graal.pointsto.results.StaticAnalysisResultsBuilder;
 import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.config.ObjectLayout;
-import com.oracle.svm.core.graal.code.amd64.SubstrateAMD64Backend;
+import com.oracle.svm.core.graal.amd64.SubstrateAMD64Backend;
 import com.oracle.svm.hosted.code.CompileQueue;
 import com.oracle.svm.hosted.code.SharedRuntimeConfigurationBuilder;
 import com.oracle.svm.hosted.config.HybridLayout;
@@ -58,7 +58,7 @@ public class HostedConfiguration {
         if (!ImageSingletons.contains(HostedConfiguration.class)) {
             ImageSingletons.add(HostedConfiguration.class, new HostedConfiguration());
 
-            CompressEncoding compressEncoding = new CompressEncoding(SubstrateOptions.UseHeapBaseRegister.getValue() ? 1 : 0, 0);
+            CompressEncoding compressEncoding = new CompressEncoding(SubstrateOptions.SpawnIsolates.getValue() ? 1 : 0, 0);
             ImageSingletons.add(CompressEncoding.class, compressEncoding);
 
             ObjectLayout objectLayout = new ObjectLayout(ConfigurationValues.getTarget(), SubstrateAMD64Backend.getDeoptScratchSpace());

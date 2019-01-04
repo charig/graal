@@ -1,37 +1,65 @@
 /*
- * Copyright (c) 2017, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package org.graalvm.launcher;
 
+import java.io.BufferedOutputStream;
 import static java.lang.Integer.max;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.channels.FileChannel;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.AccessDeniedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.Paths;
+import static java.nio.file.StandardOpenOption.APPEND;
+import static java.nio.file.StandardOpenOption.CREATE;
+import static java.nio.file.StandardOpenOption.CREATE_NEW;
+import static java.nio.file.StandardOpenOption.WRITE;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -47,6 +75,7 @@ import java.util.TreeMap;
 import java.util.logging.Level;
 
 import org.graalvm.nativeimage.RuntimeOptions;
+import org.graalvm.nativeimage.VMRuntime;
 import org.graalvm.nativeimage.c.type.CTypeConversion;
 import org.graalvm.options.OptionCategory;
 import org.graalvm.options.OptionDescriptor;
@@ -77,6 +106,7 @@ public abstract class Launcher {
     private boolean helpTools;
     private boolean helpLanguages;
     private boolean seenPolyglot;
+    private Path logFile;
 
     private VersionAction versionAction = VersionAction.None;
 
@@ -101,6 +131,10 @@ public abstract class Launcher {
 
     final void setPolyglot(boolean polyglot) {
         seenPolyglot = polyglot;
+    }
+
+    final Path getLogFile() {
+        return logFile;
     }
 
     private Engine getTempEngine() {
@@ -372,6 +406,10 @@ public abstract class Launcher {
     protected static void printPolyglotVersions() {
         Engine engine = Engine.create();
         System.out.println("GraalVM Polyglot Engine Version " + engine.getVersion());
+        Path graalVMHome = Engine.findHome();
+        if (graalVMHome != null) {
+            System.out.println("GraalVM Home " + graalVMHome);
+        }
         printLanguages(engine, true);
         printInstruments(engine, true);
     }
@@ -442,15 +480,17 @@ public abstract class Launcher {
                 printOption("--jvm", "Run on the Java Virtual Machine with Java access" + (this.getDefaultVMType() == VMType.JVM ? " (default)" : "") + ".");
                 printOption("--jvm.[option]", "Pass options to the JVM; for example, '--jvm.classpath=myapp.jar'. To see available options. use '--jvm.help'.");
             }
-            printOption("--help",                       "Print this help message.");
-            printOption("--help:languages",             "Print options for all installed languages.");
-            printOption("--help:tools",                 "Print options for all installed tools.");
-            printOption("--help:expert",                "Print additional options for experts.");
+            printOption("--help",                        "Print this help message.");
+            printOption("--help:languages",              "Print options for all installed languages.");
+            printOption("--help:tools",                  "Print options for all installed tools.");
+            printOption("--help:expert",                 "Print additional options for experts.");
             if (helpExpert || helpDebug) {
-                printOption("--help:debug",             "Print additional options for debugging.");
+                printOption("--help:debug",              "Print additional options for debugging.");
             }
-            printOption("--version:graalvm",            "Print GraalVM version information and exit.");
-            printOption("--show-version:graalvm",       "Print GraalVM version information and continue execution.");
+            printOption("--version:graalvm",             "Print GraalVM version information and exit.");
+            printOption("--show-version:graalvm",        "Print GraalVM version information and continue execution.");
+            printOption("--log.file=<String>",           "Redirect guest languages logging into a given file.");
+            printOption("--log.[logger].level=<String>", "Set language log level. Can be 'OFF', 'SEVERE', 'WARNING', 'INFO', 'CONFIG', 'FINE', 'FINER', 'FINEST' or 'ALL'.");
             // @formatter:on
             List<PrintableOption> engineOptions = new ArrayList<>();
             for (OptionDescriptor descriptor : getTempEngine().getOptions()) {
@@ -604,6 +644,9 @@ public abstract class Launcher {
                         } catch (IllegalArgumentException e) {
                             throw abort(String.format("Invalid log level %s specified. %s'", arg, e.getMessage()));
                         }
+                    } else if (key.equals("log.file")) {
+                        logFile = Paths.get(value);
+                        return true;
                     }
                 }
                 OptionDescriptor descriptor = findPolyglotOptionDescriptor(group, key);
@@ -991,6 +1034,13 @@ public abstract class Launcher {
                     remainingArgs.add(arg);
                 }
             }
+
+            /*
+             * All options are processed, now we can run the startup hooks that can depend on the
+             * option values.
+             */
+            VMRuntime.initialize();
+
             if (vmType == null) {
                 vmType = defaultVmType;
             }
@@ -1293,6 +1343,147 @@ public abstract class Launcher {
             try (CTypeConversion.CCharPointerHolder pathHolder = CTypeConversion.toCString(executable);
                             CTypeConversion.CCharPointerPointerHolder argvHolder = CTypeConversion.toCStrings(argv)) {
                 return NativeInterface.execv(pathHolder.get(), argvHolder.get());
+            }
+        }
+    }
+
+    static OutputStream newLogStream(Path path) throws IOException {
+        Path usedPath = path;
+        Path lockFile = null;
+        FileChannel lockFileChannel = null;
+        for (int unique = 0;; unique++) {
+            StringBuilder lockFileNameBuilder = new StringBuilder();
+            lockFileNameBuilder.append(path.toString());
+            if (unique > 0) {
+                lockFileNameBuilder.append(unique);
+                usedPath = Paths.get(lockFileNameBuilder.toString());
+            }
+            lockFileNameBuilder.append(".lck");
+            lockFile = Paths.get(lockFileNameBuilder.toString());
+            Map.Entry<FileChannel, Boolean> openResult = openChannel(lockFile);
+            if (openResult != null) {
+                lockFileChannel = openResult.getKey();
+                if (lock(lockFileChannel, openResult.getValue())) {
+                    break;
+                } else {
+                    // Close and try next name
+                    lockFileChannel.close();
+                }
+            }
+        }
+        assert lockFile != null && lockFileChannel != null;
+        boolean success = false;
+        try {
+            OutputStream stream = new LockableOutputStream(
+                            new BufferedOutputStream(Files.newOutputStream(usedPath, WRITE, CREATE, APPEND)),
+                            lockFile,
+                            lockFileChannel);
+            success = true;
+            return stream;
+        } finally {
+            if (!success) {
+                LockableOutputStream.unlock(lockFile, lockFileChannel);
+            }
+        }
+    }
+
+    private static Map.Entry<FileChannel, Boolean> openChannel(Path path) throws IOException {
+        FileChannel channel = null;
+        for (int retries = 0; channel == null && retries < 2; retries++) {
+            try {
+                channel = FileChannel.open(path, CREATE_NEW, WRITE);
+                return new AbstractMap.SimpleImmutableEntry<>(channel, true);
+            } catch (FileAlreadyExistsException faee) {
+                // Maybe a FS race showing a zombie file, try to reuse it
+                if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS) && isParentWritable(path)) {
+                    try {
+                        channel = FileChannel.open(path, WRITE, APPEND);
+                        return new AbstractMap.SimpleImmutableEntry<>(channel, false);
+                    } catch (NoSuchFileException x) {
+                        // FS Race, next try we should be able to create with CREATE_NEW
+                    } catch (IOException x) {
+                        return null;
+                    }
+                } else {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isParentWritable(Path path) {
+        Path parentPath = path.getParent();
+        if (parentPath == null && !path.isAbsolute()) {
+            parentPath = path.toAbsolutePath().getParent();
+        }
+        return parentPath != null && Files.isWritable(parentPath);
+    }
+
+    private static boolean lock(FileChannel lockFileChannel, boolean newFile) {
+        boolean available = false;
+        try {
+            available = lockFileChannel.tryLock() != null;
+        } catch (OverlappingFileLockException ofle) {
+            // VM already holds lock continue with available set to false
+        } catch (IOException ioe) {
+            // Locking not supported by OS
+            available = newFile;
+        }
+        return available;
+    }
+
+    private static final class LockableOutputStream extends OutputStream {
+
+        private final OutputStream delegate;
+        private final Path lockFile;
+        private final FileChannel lockFileChannel;
+
+        LockableOutputStream(OutputStream delegate, Path lockFile, FileChannel lockFileChannel) {
+            this.delegate = delegate;
+            this.lockFile = lockFile;
+            this.lockFileChannel = lockFileChannel;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            delegate.write(b);
+        }
+
+        @Override
+        public void write(byte[] b) throws IOException {
+            delegate.write(b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            delegate.write(b, off, len);
+        }
+
+        @Override
+        public void flush() throws IOException {
+            delegate.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            try {
+                delegate.close();
+            } finally {
+                unlock(lockFile, lockFileChannel);
+            }
+        }
+
+        private static void unlock(Path lockFile, FileChannel lockFileChannel) {
+            try {
+                lockFileChannel.close();
+            } catch (IOException ioe) {
+                // Error while closing the channel, ignore.
+            }
+            try {
+                Files.delete(lockFile);
+            } catch (IOException ioe) {
+                // Error while deleting the lock file, ignore.
             }
         }
     }

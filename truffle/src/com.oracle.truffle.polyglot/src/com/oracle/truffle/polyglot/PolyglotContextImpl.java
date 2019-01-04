@@ -2,25 +2,41 @@
  * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.polyglot;
 
@@ -28,8 +44,10 @@ import static com.oracle.truffle.polyglot.VMAccessor.LANGUAGE;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -111,6 +129,7 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
     final Value polyglotHostBindings; // for accesses from the polyglot api
     final PolyglotLanguage creator; // creator for internal contexts
     final Map<String, Object> creatorArguments; // special arguments for internal contexts
+    final ContextWeakReference weakReference;
 
     @CompilationFinal PolyglotContextConfig config; // effectively final
 
@@ -131,12 +150,12 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
         this.polyglotBindings = null;
         this.creator = null;
         this.creatorArguments = null;
+        this.weakReference = null;
     }
 
     /*
      * Constructor for outer contexts.
      */
-
     PolyglotContextImpl(PolyglotEngineImpl engine, PolyglotContextConfig config) {
         super(engine.impl);
         this.parent = null;
@@ -146,6 +165,7 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
         this.creatorArguments = Collections.emptyMap();
         this.truffleContext = VMAccessor.LANGUAGE.createTruffleContext(this);
         this.polyglotBindings = new ConcurrentHashMap<>();
+        this.weakReference = new ContextWeakReference(this);
         this.contexts = createContextArray();
         if (!config.logLevels.isEmpty()) {
             VMAccessor.LANGUAGE.configureLoggers(this, config.logLevels);
@@ -168,6 +188,7 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
         this.engine = parent.engine;
         this.creator = creator.language;
         this.creatorArguments = langConfig;
+        this.weakReference = new ContextWeakReference(this);
         this.parent.addChildContext(this);
         this.truffleContext = spiContext;
         this.polyglotBindings = new ConcurrentHashMap<>();
@@ -350,7 +371,7 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
     void leave(Object prev) {
         assert current() == this : "Cannot leave context that is currently not entered. Forgot to enter or leave a context?";
         PolyglotThreadInfo info = getCachedThreadInfo();
-        if (CompilerDirectives.injectBranchProbability(CompilerDirectives.LIKELY_PROBABILITY, info.thread == Thread.currentThread())) {
+        if (CompilerDirectives.injectBranchProbability(CompilerDirectives.LIKELY_PROBABILITY, info.thread == (TruffleOptions.AOT ? ContextThreadLocal.currentThread() : Thread.currentThread()))) {
             info.leave();
         } else {
             if (singleThreaded.isValid()) {
@@ -748,7 +769,7 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
         checkCreatorAccess(sourceContext, "closed");
         boolean closeCompleted = closeImpl(cancelIfExecuting, cancelIfExecuting);
         if (cancelIfExecuting) {
-            engine.getCancelHandler().waitForClosing(this);
+            engine.getCancelHandler().waitForClosing(Arrays.asList(this));
         } else if (!closeCompleted) {
             throw new PolyglotIllegalStateException(String.format("The context is currently executing on another thread. " +
                             "Set cancelIfExecuting to true to stop the execution on this thread."));
@@ -764,26 +785,29 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
 
     @Override
     public Value asValue(Object hostValue) {
-        if (hostValue instanceof Value) {
-            return (Value) hostValue;
-        }
-        PolyglotLanguageContext context = null;
-        Object guestValue = null;
-        if (hostValue instanceof PolyglotList) {
-            context = ((PolyglotList<?>) hostValue).languageContext;
-            guestValue = ((PolyglotList<?>) hostValue).guestObject;
-        } else if (hostValue instanceof PolyglotMap) {
-            context = ((PolyglotMap<?, ?>) hostValue).languageContext;
-            guestValue = ((PolyglotMap<?, ?>) hostValue).guestObject;
-        } else if (hostValue instanceof PolyglotFunction) {
-            context = ((PolyglotFunction<?, ?>) hostValue).languageContext;
-            guestValue = ((PolyglotFunction<?, ?>) hostValue).guestObject;
-        }
-        if (context == null) {
-            context = getHostContext();
-            return context.asValue(context.toGuestValue(hostValue));
-        } else {
-            return context.asValue(guestValue);
+        try {
+            PolyglotLanguageContext targetLanguageContext;
+            if (hostValue instanceof Value) {
+                // fast path for when no context migration is necessary
+                PolyglotValue value = (PolyglotValue) getAPIAccess().getImpl((Value) hostValue);
+                if (value.languageContext != null && value.languageContext.context == this) {
+                    return (Value) hostValue;
+                }
+                targetLanguageContext = getHostContext();
+            } else if (HostWrapper.isInstance(hostValue)) {
+                // host wrappers can nicely reuse the associated context
+                targetLanguageContext = HostWrapper.asInstance(hostValue).getLanguageContext();
+                if (this != targetLanguageContext.context) {
+                    // this will fail later in toGuestValue when migrating
+                    // or succeed in case of host languages.
+                    targetLanguageContext = getHostContext();
+                }
+            } else {
+                targetLanguageContext = getHostContext();
+            }
+            return targetLanguageContext.asValue(targetLanguageContext.toGuestValue(hostValue));
+        } catch (Throwable e) {
+            throw PolyglotImpl.wrapGuestException(this.getHostContext(), e);
         }
     }
 
@@ -968,7 +992,7 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
                 if (!this.config.logLevels.isEmpty()) {
                     VMAccessor.LANGUAGE.configureLoggers(this, null);
                 }
-                if (this.config.logHandler != null) {
+                if (this.config.logHandler != null && this.config.logHandler != engine.logHandler) {
                     this.config.logHandler.close();
                 }
             }
@@ -1083,6 +1107,17 @@ final class PolyglotContextImpl extends AbstractContextImpl implements com.oracl
         context.constantCurrentThreadInfo = PolyglotThreadInfo.NULL;
         disposeStaticContext(context);
         return context;
+    }
+
+    static class ContextWeakReference extends WeakReference<PolyglotContextImpl> {
+
+        volatile boolean removed = false;
+        final List<PolyglotLanguageInstance> freeInstances = new ArrayList<>();
+
+        ContextWeakReference(PolyglotContextImpl referent) {
+            super(referent, referent.engine.contextsReferenceQueue);
+        }
+
     }
 
 }

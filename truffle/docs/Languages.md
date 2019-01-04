@@ -5,7 +5,7 @@ This page is intended to keep track of the growing number of Truffle language im
 * [Graal.js](http://www.oracle.com/technetwork/oracle-labs/program-languages/overview/index.html), an ECMAScript 2017 compliant JavaScript implementation. *
 * [FastR](https://github.com/graalvm/fastr), an implementation of GNU R. *
 * [TruffleRuby](https://github.com/graalvm/truffleruby), an implementation of Ruby. *
-* [Sulong](https://github.com/graalvm/sulong), an LLVM bitcode interpreter. *
+* [Sulong](https://github.com/oracle/graal/sulong), an LLVM bitcode interpreter. *
 * [Graal.Python](http://www.oracle.com/technetwork/oracle-labs/program-languages/overview/index.html), an early-stage implementation of Python. * 
 * [TruffleSOM](https://github.com/SOM-st/TruffleSOM), a SOM Smalltalk implementation. 
 * [SOMns](https://github.com/smarr/SOMns), a Newspeak implementation for Concurrency Research.
@@ -30,5 +30,6 @@ This page is intended to keep track of the growing number of Truffle language im
 * [PorcE](https://github.com/orc-lang/orc/tree/master/PorcE), an Orc language implementation.
 * [shen-truffle](https://github.com/ragnard/shen-truffle), a port of the Shen programming language.
 * [bf](https://github.com/chumer/bf/), an experimental Brainfuck programming language implementation.
+* [brainfuck-jvm](https://github.com/mthmulders/brainfuck-jvm), another Brainfuck language implementation.
 
 Feel free to submit a [pull request](https://help.github.com/articles/using-pull-requests/) to add/remove from this list.

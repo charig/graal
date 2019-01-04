@@ -25,21 +25,23 @@
 package com.oracle.svm.reflect.hosted;
 
 /* Allow imports of java.lang.reflect and sun.misc.ProxyGenerator: Checkstyle: allow reflection. */
+
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.util.HashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import org.graalvm.compiler.serviceprovider.GraalServices;
 
+import com.oracle.svm.core.SubstrateUtil;
+import com.oracle.svm.core.jdk.UninterruptibleUtils.AtomicInteger;
 import com.oracle.svm.core.util.VMError;
 import com.oracle.svm.hosted.ImageClassLoader;
 import com.oracle.svm.hosted.annotation.CustomSubstitution;
-import com.oracle.svm.reflect.hosted.ReflectionSubstitutionType.ReflectionSubstitutionMethod;
 import com.oracle.svm.reflect.helpers.ReflectionProxy;
+import com.oracle.svm.reflect.hosted.ReflectionSubstitutionType.ReflectionSubstitutionMethod;
 
 import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
@@ -47,6 +49,7 @@ import jdk.vm.ci.meta.ResolvedJavaType;
 
 final class ReflectionSubstitution extends CustomSubstitution<ReflectionSubstitutionType> {
 
+    private static final String PROXY_NAME_SEPARATOR = "_";
     private final Method defineClass;
     private final Method resolveClass;
 
@@ -56,9 +59,9 @@ final class ReflectionSubstitution extends CustomSubstitution<ReflectionSubstitu
     private final HashMap<Member, Class<?>> proxyMap = new HashMap<>();
     private final HashMap<ResolvedJavaType, Member> typeToMember = new HashMap<>();
 
-    private final ImageClassLoader imageClassLoader;
+    private static final AtomicInteger proxyNr = new AtomicInteger(0);
 
-    private static final AtomicInteger proxyNr = new AtomicInteger();
+    private final ImageClassLoader imageClassLoader;
 
     private static Method lookupPrivateMethod(Class<?> clazz, String name, Class<?>... args) {
         try {
@@ -79,19 +82,8 @@ final class ReflectionSubstitution extends CustomSubstitution<ReflectionSubstitu
         imageClassLoader = classLoader;
     }
 
-    private static <T> String getSimpleNameSafe(Class<T> clazz) {
-        return clazz.getName().substring(clazz.getName().lastIndexOf('.') + 1);
-    }
-
-    private static String getProxyClassname(Member member) {
-        String className = getSimpleNameSafe(member.getDeclaringClass());
-        String memberName;
-        if (member instanceof Constructor) {
-            memberName = className;
-        } else {
-            memberName = member.getName();
-        }
-        return "com.oracle.svm.reflect.proxies.Proxy_" + proxyNr.incrementAndGet() + "_" + className + "_" + memberName;
+    static String getStableProxyName(Member member) {
+        return "com.oracle.svm.reflect." + SubstrateUtil.uniqueShortName(member);
     }
 
     private static Class<?> getAccessorInterface(Member member) {
@@ -137,11 +129,11 @@ final class ReflectionSubstitution extends CustomSubstitution<ReflectionSubstitu
     Class<?> getProxyClass(Member member) {
         Class<?> ret = proxyMap.get(member);
         if (ret == null) {
-            String name = getProxyClassname(member);
+            /* the unique ID is added for unit tests that don't change the class loader */
+            String name = getStableProxyName(member) + PROXY_NAME_SEPARATOR + proxyNr.incrementAndGet();
+
             Class<?> iface = getAccessorInterface(member);
-
             byte[] proxyBC = generateProxyClass(name, new Class<?>[]{iface, ReflectionProxy.class});
-
             try {
                 ret = (Class<?>) defineClass.invoke(imageClassLoader.getClassLoader(), name, proxyBC, 0, proxyBC.length);
                 resolveClass.invoke(imageClassLoader.getClassLoader(), ret);

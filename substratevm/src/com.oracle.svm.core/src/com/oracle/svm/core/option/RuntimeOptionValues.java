@@ -76,6 +76,7 @@ public class RuntimeOptionValues extends ModifiableOptionValues {
 }
 
 class RuntimeOptionsSupportImpl implements RuntimeOptionsSupport {
+
     @Override
     public void set(String optionName, Object value) {
         if (setXOption(optionName)) {

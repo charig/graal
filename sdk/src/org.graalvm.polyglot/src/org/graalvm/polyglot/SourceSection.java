@@ -1,26 +1,42 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package org.graalvm.polyglot;
 
@@ -61,6 +77,44 @@ public final class SourceSection {
     }
 
     /**
+     * Returns <code>true</code> if this section has a line number information, <code>false</code>
+     * otherwise. When <code>true</code>, {@link #getStartLine()} and {@link #getEndLine()} return
+     * valid line numbers, when <code>false</code>, {@link #getStartLine()} and
+     * {@link #getEndLine()} return <code>1</code>.
+     *
+     * @since 1.0
+     */
+    public boolean hasLines() {
+        return IMPL.hasLines(impl);
+    }
+
+    /**
+     * Returns <code>true</code> if this section has a column number information, <code>false</code>
+     * otherwise. When <code>true</code>, {@link #hasLines()} is <code>true</code> as well,
+     * {@link #getStartColumn()} and {@link #getEndColumn()} return valid column numbers. When
+     * <code>false</code>, {@link #getStartColumn()} and {@link #getEndColumn()} return
+     * <code>1</code>.
+     *
+     * @since 1.0
+     */
+    public boolean hasColumns() {
+        return IMPL.hasColumns(impl);
+    }
+
+    /**
+     * Returns <code>true</code> if this section has a character index information,
+     * <code>false</code> otherwise. When <code>true</code>, {@link #getCharIndex()},
+     * {@link #getCharEndIndex()} and {@link #getCharLength()} return valid character indices, when
+     * <code>false</code>, {@link #getCharIndex()}, {@link #getCharEndIndex()} and
+     * {@link #getCharLength()} return <code>0</code>.
+     *
+     * @since 1.0
+     */
+    public boolean hasCharIndex() {
+        return IMPL.hasCharIndex(impl);
+    }
+
+    /**
      * Representation of the source program that contains this section.
      *
      * @return the source object.
@@ -72,11 +126,11 @@ public final class SourceSection {
 
     /**
      * Returns 1-based line number of the first character in this section (inclusive). Returns
-     * <code>1</code> for out of bounds or {@link #isAvailable() unavailable} source sections. Note
-     * that calling this method causes the {@link Source#getCharacters() code} of the
-     * {@link #getSource() source} to be loaded if it was not yet loaded.
+     * <code>1</code> for out of bounds or {@link #isAvailable() unavailable} source sections, or
+     * source sections not {@link #hasLines() having lines}.
      *
      * @return the starting line number.
+     * @see #hasLines()
      * @since 1.0
      */
     public int getStartLine() {
@@ -85,11 +139,11 @@ public final class SourceSection {
 
     /**
      * Returns the 1-based column number of the first character in this section (inclusive). Returns
-     * <code>1</code> for out of bounds or {@link #isAvailable() unavailable} source sections. Note
-     * that calling this method causes the {@link Source#getCharacters() code} of the
-     * {@link #getSource() source} to be loaded if it was not yet loaded.
+     * <code>1</code> for out of bounds or {@link #isAvailable() unavailable} source sections, or
+     * source sections not {@link #hasColumns() having columns}.
      *
      * @return the starting column number.
+     * @see #hasColumns()
      * @since 1.0
      */
     public int getStartColumn() {
@@ -98,11 +152,11 @@ public final class SourceSection {
 
     /**
      * Returns 1-based line number of the last character in this section (inclusive). Returns
-     * <code>1</code> for out of bounds or {@link #isAvailable() unavailable} source sections. Note
-     * that calling this method causes the {@link Source#getCharacters() code} of the
-     * {@link #getSource() source} to be loaded if it was not yet loaded.
+     * <code>1</code> for out of bounds or {@link #isAvailable() unavailable} source sections, or
+     * source sections not {@link #hasLines() having lines}.
      *
      * @return the starting line number.
+     * @see #hasLines()
      * @since 1.0
      */
     public int getEndLine() {
@@ -111,11 +165,11 @@ public final class SourceSection {
 
     /**
      * Returns the 1-based column number of the last character in this section (inclusive). Returns
-     * <code>1</code> for out of bounds or {@link #isAvailable() unavailable} source sections. Note
-     * that calling this method causes the {@link Source#getCharacters() code} of the
-     * {@link #getSource() source} to be loaded if it was not yet loaded.
+     * <code>1</code> for out of bounds or {@link #isAvailable() unavailable} source sections, or
+     * source sections not {@link #hasColumns() having columns}.
      *
      * @return the starting column number.
+     * @see #hasColumns()
      * @since 1.0
      */
     public int getEndColumn() {
@@ -124,12 +178,12 @@ public final class SourceSection {
 
     /**
      * Returns the 0-based index of the first character in this section. Returns <code>0</code> for
-     * {@link #isAvailable() unavailable} source sections. Note that calling this method does not
-     * cause the {@link Source#getCharacters() code} of the {@link #getSource() source} to be
-     * loaded. The returned index might be out of bounds of the source code if assertions (-ea) are
-     * not enabled.
+     * {@link #isAvailable() unavailable} source sections, or sections not {@link #hasCharIndex()
+     * having character index}. The returned index might be out of bounds of the source code if
+     * assertions (-ea) are not enabled.
      *
      * @return the starting character index.
+     * @see #hasCharIndex()
      * @since 1.0
      */
     public int getCharIndex() {
@@ -138,12 +192,12 @@ public final class SourceSection {
 
     /**
      * Returns the length of this section in characters. Returns <code>0</code> for
-     * {@link #isAvailable() unavailable} source sections. Note that calling this method does not
-     * cause the {@link Source#getCharacters() code} of the {@link #getSource() source} to be
-     * loaded. The returned length might be out of bounds of the source code if assertions (-ea) are
-     * not enabled.
+     * {@link #isAvailable() unavailable} source sections, or sections not {@link #hasCharIndex()
+     * having character index}. The returned length might be out of bounds of the source code if
+     * assertions (-ea) are not enabled.
      *
      * @return the number of characters in the section.
+     * @see #hasCharIndex()
      * @since 1.0
      */
     public int getCharLength() {
@@ -152,13 +206,13 @@ public final class SourceSection {
 
     /**
      * Returns the index of the text position immediately following the last character in the
-     * section. Returns <code>0</code> for {@link #isAvailable() unavailable} source sections. Note
-     * that calling this method does not cause the {@link Source#getCharacters() code} of the
-     * {@link #getSource() source} to be loaded. The returned index might be out of bounds of the
-     * source code if assertions (-ea) are not enabled.
+     * section. Returns <code>0</code> for {@link #isAvailable() unavailable} source sections, or
+     * sections not {@link #hasCharIndex() having character index}. The returned index might be out
+     * of bounds of the source code if assertions (-ea) are not enabled.
      *
      * @return the end position of the section.
-     * @since 0.8 or earlier
+     * @see #hasCharIndex()
+     * @since 1.0
      */
     public int getCharEndIndex() {
         return IMPL.getCharEndIndex(impl);

@@ -41,7 +41,7 @@ import org.graalvm.compiler.nodes.spi.LIRLowerable;
 import org.graalvm.compiler.nodes.spi.NodeLIRBuilderTool;
 import org.graalvm.word.WordBase;
 
-import com.oracle.svm.core.amd64.FrameAccess;
+import com.oracle.svm.core.FrameAccess;
 
 import jdk.vm.ci.code.BailoutException;
 import jdk.vm.ci.meta.JavaConstant;
@@ -119,7 +119,7 @@ public final class StackValueNode extends FixedWithNextNode implements LIRLowera
             if (slot == null) {
                 int wordSize = gen.getLIRGeneratorTool().target().wordSize;
                 int slots = roundUp(size, wordSize) / wordSize;
-                slot = gen.getLIRGeneratorTool().getResult().getFrameMapBuilder().allocateStackSlots(slots, new BitSet(0), null);
+                slot = gen.getLIRGeneratorTool().allocateStackSlots(slots, new BitSet(0), null);
                 stackSlotHolder.slot = slot;
             }
             gen.setResult(this, gen.getLIRGeneratorTool().emitAddress(slot));

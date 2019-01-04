@@ -2,25 +2,41 @@
  * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.polyglot;
 
@@ -30,7 +46,10 @@ import static com.oracle.truffle.polyglot.VMAccessor.NODES;
 
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Path;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -47,6 +66,8 @@ import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.impl.AbstractPolyglotImpl;
 import org.graalvm.polyglot.io.FileSystem;
+import org.graalvm.polyglot.io.MessageTransport;
+import org.graalvm.polyglot.proxy.Proxy;
 
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.CompilerAsserts;
@@ -62,6 +83,7 @@ import com.oracle.truffle.api.TruffleOptions;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.impl.Accessor.EngineSupport;
 import com.oracle.truffle.api.impl.DispatchOutputStream;
+import com.oracle.truffle.api.impl.HomeFinder;
 import com.oracle.truffle.api.impl.TruffleLocator;
 import com.oracle.truffle.api.instrumentation.ContextsListener;
 import com.oracle.truffle.api.instrumentation.ThreadsListener;
@@ -72,9 +94,8 @@ import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
+
 import com.oracle.truffle.polyglot.HostLanguage.HostContext;
-import java.nio.file.Path;
-import com.oracle.truffle.api.impl.HomeFinder;
 
 /*
  * This class is exported to the Graal SDK. Keep that in mind when changing its class or package name.
@@ -94,10 +115,21 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
     private final PolyglotExecutionListener executionListenerImpl = new PolyglotExecutionListener(this);
     private final AtomicReference<PolyglotEngineImpl> preInitializedEngineRef = new AtomicReference<>();
 
+    final Map<Class<?>, PolyglotValue> primitiveValues = new HashMap<>();
+    Value hostNull; // effectively final
+    PolyglotValue disconnectedHostValue;
+
     /**
      * Internal method do not use.
      */
     public PolyglotImpl() {
+    }
+
+    @Override
+    protected void initialize() {
+        this.hostNull = getAPIAccess().newValue(HostObject.NULL, PolyglotValue.createHostNull(this));
+        PolyglotValue.createDefaultValues(this, null, primitiveValues);
+        disconnectedHostValue = new PolyglotValue.HostValue(this);
     }
 
     /**
@@ -141,13 +173,14 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
      */
     @Override
     public Engine buildEngine(OutputStream out, OutputStream err, InputStream in, Map<String, String> arguments, long timeout, TimeUnit timeoutUnit, boolean sandbox,
-                    long maximumAllowedAllocationBytes, boolean useSystemProperties, boolean boundEngine, Handler logHandler) {
+                    long maximumAllowedAllocationBytes, boolean useSystemProperties, boolean boundEngine, MessageTransport messageInterceptor, Object logHandlerOrStream) {
         if (TruffleOptions.AOT) {
             VMAccessor.SPI.initializeNativeImageTruffleLocator();
         }
         OutputStream resolvedOut = out == null ? System.out : out;
         OutputStream resolvedErr = err == null ? System.err : err;
         InputStream resolvedIn = in == null ? System.in : in;
+        Handler logHandler = PolyglotLogHandler.asHandler(logHandlerOrStream);
 
         DispatchOutputStream dispatchOut = INSTRUMENT.createDispatchOutput(resolvedOut);
         DispatchOutputStream dispatchErr = INSTRUMENT.createDispatchOutput(resolvedErr);
@@ -161,7 +194,7 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
             }
         }
         if (impl == null) {
-            impl = new PolyglotEngineImpl(this, dispatchOut, dispatchErr, resolvedIn, arguments, useSystemProperties, contextClassLoader, boundEngine, logHandler);
+            impl = new PolyglotEngineImpl(this, dispatchOut, dispatchErr, resolvedIn, arguments, useSystemProperties, contextClassLoader, boundEngine, messageInterceptor, logHandler);
         }
         Engine engine = getAPIAccess().newEngine(impl);
         impl.creatorApi = engine;
@@ -174,7 +207,7 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
      */
     @Override
     public void preInitializeEngine() {
-        final Handler logHandler = PolyglotLogHandler.createStreamHandler(System.out, false, true);
+        final Handler logHandler = PolyglotLogHandler.createStreamHandler(System.err, false, true);
         try {
             final PolyglotEngineImpl preInitializedEngine = PolyglotEngineImpl.preInitialize(
                             this,
@@ -213,9 +246,58 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
     }
 
     @Override
+    public Collection<Engine> findActiveEngines() {
+        return PolyglotEngineImpl.findActiveEngines();
+    }
+
+    @Override
     public Path findHome() {
         final HomeFinder homeFinder = HomeFinder.getInstance();
         return homeFinder == null ? null : homeFinder.getHomeFolder();
+    }
+
+    @Override
+    @TruffleBoundary
+    public Value asValue(Object hostValue) {
+        PolyglotContextImpl currentContext = PolyglotContextImpl.current();
+        if (currentContext != null) {
+            // if we are currently entered in a context just use it and bind the value to it.
+            return currentContext.asValue(hostValue);
+        }
+
+        /*
+         * No entered context. Try to do something reasonable.
+         */
+        assert !(hostValue instanceof Value);
+        PolyglotContextImpl valueContext = null;
+        Object guestValue = null;
+        if (hostValue == null) {
+            return hostNull;
+        } else if (isGuestPrimitive(hostValue)) {
+            return getAPIAccess().newValue(hostValue, primitiveValues.get(hostValue.getClass()));
+        } else if (HostWrapper.isInstance(hostValue)) {
+            HostWrapper hostWrapper = HostWrapper.asInstance(hostValue);
+            // host wrappers can nicely reuse the associated context
+            guestValue = hostWrapper.getGuestObject();
+            valueContext = hostWrapper.getContext();
+            return valueContext.asValue(guestValue);
+        } else {
+            /*
+             * We currently cannot support doing interop without a context so we create our own
+             * value representations wit null for this case. No interop messages are used until they
+             * are unboxed in PolyglotContextImpl#toGuestValue where a context will be attached.
+             */
+            if (hostValue instanceof TruffleObject) {
+                guestValue = hostValue;
+            } else if (hostValue instanceof Proxy) {
+                guestValue = PolyglotProxy.toProxyGuestObject(null, (Proxy) hostValue);
+            } else if (hostValue instanceof Class) {
+                guestValue = HostObject.forClass((Class<?>) hostValue, null);
+            } else {
+                guestValue = HostObject.forObject(hostValue, null);
+            }
+            return getAPIAccess().newValue(guestValue, disconnectedHostValue);
+        }
     }
 
     org.graalvm.polyglot.Source getPolyglotSource(Source source) {
@@ -613,6 +695,12 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
         }
 
         @Override
+        public boolean inContextPreInitialization(Object vmObject) {
+            PolyglotLanguageContext context = (PolyglotLanguageContext) vmObject;
+            return context.context.inContextPreInitialization;
+        }
+
+        @Override
         @TruffleBoundary
         public void exportSymbol(Object vmObject, String symbolName, Object value) {
             PolyglotLanguageContext context = (PolyglotLanguageContext) vmObject;
@@ -633,28 +721,6 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
         @Override
         public void registerDebugger(Object vm, Object debugger) {
             throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public <T> T installJavaInteropCodeCache(Object languageContext, Object key, T value, Class<T> expectedType) {
-            if (languageContext == null) {
-                return value;
-            }
-            T result = expectedType.cast(((PolyglotLanguageContext) languageContext).context.engine.javaInteropCodeCache.putIfAbsent(key, value));
-            if (result != null) {
-                return result;
-            } else {
-                return value;
-            }
-        }
-
-        @Override
-        public <T> T lookupJavaInteropCodeCache(Object languageContext, Object key, Class<T> expectedType) {
-            if (languageContext == null) {
-                return null;
-            }
-
-            return expectedType.cast(((PolyglotLanguageContext) languageContext).context.engine.javaInteropCodeCache.get(key));
         }
 
         @Override
@@ -757,7 +823,7 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
         }
 
         @Override
-        public Thread createThread(Object vmObject, Runnable runnable, Object innerContextImpl) {
+        public Thread createThread(Object vmObject, Runnable runnable, Object innerContextImpl, ThreadGroup group, long stackSize) {
             if (!isCreateThreadAllowed(vmObject)) {
                 throw new IllegalStateException("Creating threads is not allowed.");
             }
@@ -767,7 +833,7 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
                 PolyglotContextImpl innerContext = (PolyglotContextImpl) innerContextImpl;
                 threadContext = innerContext.getContext(threadContext.language);
             }
-            return new PolyglotThread(threadContext, runnable);
+            return new PolyglotThread(threadContext, runnable, group, stackSize);
         }
 
         @Override
@@ -875,7 +941,7 @@ public final class PolyglotImpl extends AbstractPolyglotImpl {
 
         @Override
         public boolean isDefaultFileSystem(FileSystem fs) {
-            return FileSystems.getDefaultFileSystem() == fs;
+            return FileSystems.isDefaultFileSystem(fs);
         }
 
         @Override

@@ -1,29 +1,47 @@
 /*
- * Copyright (c) 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.api.test.polyglot;
 
+import static com.oracle.truffle.api.test.polyglot.ValueAssert.assertFails;
+import static com.oracle.truffle.api.test.polyglot.ValueAssert.assertValue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -65,6 +83,7 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.Option;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.Scope;
@@ -852,6 +871,21 @@ public class LanguageSPITest {
     }
 
     @Test
+    public void testInitializeCalledWithEngineOptions() {
+        Engine engine = Engine.newBuilder().option(MultiContextLanguage.ID + ".DummyOption", "42").build();
+        Context context = Context.newBuilder().engine(engine).build();
+        context.initialize(MultiContextLanguage.ID);
+        MultiContextLanguage lang = MultiContextLanguage.getInstance(context);
+        assertEquals(1, lang.initializeMultiContextCalled.size());
+        assertEquals(1, lang.initializeMultipleContextsCalled.size());
+        assertEquals(1, (int) lang.initializeMultipleContextsCalled.get(0));
+        assertEquals(2, (int) lang.initializeMultiContextCalled.get(0));
+        assertEquals(1, lang.createContextCalled.size());
+        context.close();
+        engine.close();
+    }
+
+    @Test
     public void testMultiContextExplicitEngineNoCaching() {
         org.graalvm.polyglot.Source source1 = org.graalvm.polyglot.Source.create(MultiContextLanguage.ID, "foo");
         org.graalvm.polyglot.Source source2 = org.graalvm.polyglot.Source.create(MultiContextLanguage.ID, "bar");
@@ -1461,7 +1495,7 @@ public class LanguageSPITest {
         assertNull(bindings.getMember(""));
         ValueAssert.assertFails(() -> bindings.putMember("", ""), UnsupportedOperationException.class);
         assertFalse(bindings.removeMember(""));
-        ValueAssert.assertValue(c, bindings);
+        assertValue(bindings);
 
         c.close();
     }
@@ -1487,25 +1521,25 @@ public class LanguageSPITest {
         ValueAssert.assertFails(() -> bindings.putMember("", ""), UnsupportedOperationException.class);
         assertFalse(bindings.removeMember(""));
         ValueAssert.assertFails(() -> bindings.removeMember("foobar"), UnsupportedOperationException.class);
-        ValueAssert.assertValue(c, bindings, ValueAssert.Trait.MEMBERS);
+        assertValue(bindings, ValueAssert.Trait.MEMBERS);
 
         scope.insertable = true;
-        bindings.putMember("baz", "42");
-        assertEquals("42", scope.values.get("baz"));
-        assertEquals("42", bindings.getMember("baz").asString());
-        ValueAssert.assertFails(() -> bindings.putMember("foobar", "42"), UnsupportedOperationException.class);
-        ValueAssert.assertValue(c, bindings, ValueAssert.Trait.MEMBERS);
+        bindings.putMember("baz", "val");
+        assertEquals("val", scope.values.get("baz"));
+        assertEquals("val", bindings.getMember("baz").asString());
+        assertFails(() -> bindings.putMember("foobar", "42"), UnsupportedOperationException.class);
+        assertValue(bindings, ValueAssert.Trait.MEMBERS);
 
         scope.modifiable = true;
-        bindings.putMember("foobar", "42");
-        assertEquals("42", scope.values.get("foobar"));
-        assertEquals("42", bindings.getMember("foobar").asString());
-        ValueAssert.assertValue(c, bindings, ValueAssert.Trait.MEMBERS);
+        bindings.putMember("foobar", "val");
+        assertEquals("val", scope.values.get("foobar"));
+        assertEquals("val", bindings.getMember("foobar").asString());
+        assertValue(bindings, ValueAssert.Trait.MEMBERS);
 
         scope.removable = true;
         assertFalse(bindings.removeMember(""));
         assertTrue(bindings.removeMember("foobar"));
-        ValueAssert.assertValue(c, bindings, ValueAssert.Trait.MEMBERS);
+        assertValue(bindings, ValueAssert.Trait.MEMBERS);
 
         assertEquals(1, findScopeInvokes);
 
@@ -1541,21 +1575,21 @@ public class LanguageSPITest {
         assertEquals("bar", scopes[1].values.get("foo"));
         assertNull(scopes[0].values.get("foo"));
         assertNull(scopes[2].values.get("foo"));
-        ValueAssert.assertValue(c, bindings, ValueAssert.Trait.MEMBERS);
+        ValueAssert.assertValue(bindings, ValueAssert.Trait.MEMBERS);
 
         // test check for existing keys for remove
         scopes[2].removable = true;
         scopes[2].values.put("foo", "baz");
         scopes[2].values.put("bar", "baz");
-        scopes[3].values.put("bar", "42");
+        scopes[3].values.put("bar", "val");
         assertEquals("bar", bindings.getMember("foo").asString());
         assertEquals("baz", bindings.getMember("bar").asString());
         ValueAssert.assertFails(() -> bindings.removeMember("foo"), UnsupportedOperationException.class);
         assertTrue(bindings.removeMember("bar"));
         assertNotNull(scopes[2].values.get("foo"));
         assertNull(scopes[2].values.get("bar"));
-        assertEquals("42", bindings.getMember("bar").asString());
-        ValueAssert.assertValue(c, bindings, ValueAssert.Trait.MEMBERS);
+        assertEquals("val", bindings.getMember("bar").asString());
+        assertValue(bindings, ValueAssert.Trait.MEMBERS);
 
         c.close();
     }
@@ -1582,12 +1616,12 @@ public class LanguageSPITest {
         assertEquals("bar", polyglotBindings.getMember("foo").asString());
         assertEquals("bar", languageBindings.getMember("foo").asString());
 
-        languageBindings.putMember("baz", "42");
-        assertEquals("42", polyglotBindings.getMember("baz").asString());
-        assertEquals("42", languageBindings.getMember("baz").asString());
+        languageBindings.putMember("baz", "val");
+        assertEquals("val", polyglotBindings.getMember("baz").asString());
+        assertEquals("val", languageBindings.getMember("baz").asString());
 
-        ValueAssert.assertValue(c, polyglotBindings);
-        ValueAssert.assertValue(c, languageBindings);
+        assertValue(polyglotBindings);
+        assertValue(languageBindings);
 
         c.close();
     }
@@ -1656,11 +1690,16 @@ public class LanguageSPITest {
                     public Object execute(VirtualFrame frame) {
                         Object bindings = getCurrentContext(ProxyLanguage.class).env.getPolyglotBindings();
                         try {
-                            ForeignAccess.sendWrite(Message.WRITE.createNode(), (TruffleObject) bindings, "exportedValue", "convertOnToString");
+                            boundary((TruffleObject) bindings);
                         } catch (UnknownIdentifierException | UnsupportedTypeException | UnsupportedMessageException e) {
                             throw new AssertionError(e);
                         }
                         return bindings;
+                    }
+
+                    @CompilerDirectives.TruffleBoundary
+                    private void boundary(TruffleObject bindings) throws UnknownIdentifierException, UnsupportedTypeException, UnsupportedMessageException {
+                        ForeignAccess.sendWrite(Message.WRITE.createNode(), bindings, "exportedValue", "convertOnToString");
                     }
                 });
             }

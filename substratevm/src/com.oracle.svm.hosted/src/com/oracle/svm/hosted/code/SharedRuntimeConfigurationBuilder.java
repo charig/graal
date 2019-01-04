@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012, 2017, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2012, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
  * This code is free software; you can redistribute it and/or modify it
@@ -32,7 +32,6 @@ import java.util.function.Function;
 import org.graalvm.compiler.api.replacements.SnippetReflectionProvider;
 import org.graalvm.compiler.core.common.spi.ConstantFieldProvider;
 import org.graalvm.compiler.core.common.spi.ForeignCallsProvider;
-import org.graalvm.compiler.core.target.Backend;
 import org.graalvm.compiler.nodes.spi.LoweringProvider;
 import org.graalvm.compiler.nodes.spi.Replacements;
 import org.graalvm.compiler.nodes.spi.StampProvider;
@@ -40,15 +39,17 @@ import org.graalvm.compiler.options.OptionValues;
 import org.graalvm.compiler.phases.util.Providers;
 import org.graalvm.compiler.word.WordTypes;
 
-import com.oracle.svm.core.amd64.FrameAccess;
+import com.oracle.svm.core.FrameAccess;
+import com.oracle.svm.core.SubstrateOptions;
 import com.oracle.svm.core.config.ConfigurationValues;
 import com.oracle.svm.core.graal.GraalConfiguration;
-import com.oracle.svm.core.graal.code.amd64.SubstrateAMD64RegisterConfig;
-import com.oracle.svm.core.graal.code.amd64.SubstrateAMD64RegisterConfig.ConfigKind;
+import com.oracle.svm.core.graal.amd64.SubstrateAMD64RegisterConfig;
+import com.oracle.svm.core.graal.code.SubstrateBackend;
 import com.oracle.svm.core.graal.meta.RuntimeConfiguration;
 import com.oracle.svm.core.graal.meta.SubstrateCodeCacheProvider;
 import com.oracle.svm.core.graal.meta.SubstrateForeignCallsProvider;
 import com.oracle.svm.core.graal.meta.SubstrateLoweringProvider;
+import com.oracle.svm.core.graal.meta.SubstrateRegisterConfig.ConfigKind;
 import com.oracle.svm.core.graal.meta.SubstrateSnippetReflectionProvider;
 import com.oracle.svm.core.graal.meta.SubstrateStampProvider;
 import com.oracle.svm.core.hub.DynamicHub;
@@ -68,9 +69,9 @@ public abstract class SharedRuntimeConfigurationBuilder {
     protected final MetaAccessProvider metaAccess;
     protected RuntimeConfiguration runtimeConfig;
     protected WordTypes wordTypes;
-    protected Function<Providers, Backend> backendProvider;
+    protected Function<Providers, SubstrateBackend> backendProvider;
 
-    public SharedRuntimeConfigurationBuilder(OptionValues options, SVMHost hostVM, MetaAccessProvider metaAccess, Function<Providers, Backend> backendProvider) {
+    public SharedRuntimeConfigurationBuilder(OptionValues options, SVMHost hostVM, MetaAccessProvider metaAccess, Function<Providers, SubstrateBackend> backendProvider) {
         this.options = options;
         this.hostVM = hostVM;
         this.metaAccess = metaAccess;
@@ -83,10 +84,9 @@ public abstract class SharedRuntimeConfigurationBuilder {
         StampProvider stampProvider = createStampProvider(p);
         p = createProviders(null, null, null, null, null, null, stampProvider, null);
         ConstantReflectionProvider constantReflection = createConstantReflectionProvider(p);
+        p = createProviders(null, constantReflection, null, null, null, null, stampProvider, null);
         ConstantFieldProvider constantFieldProvider = createConstantFieldProvider(p);
-        createProviders(null, constantReflection, constantFieldProvider, null, null, null, stampProvider, null);
         SnippetReflectionProvider snippetReflection = createSnippetReflectionProvider();
-        createProviders(null, constantReflection, constantFieldProvider, null, null, null, stampProvider, snippetReflection);
         ForeignCallsProvider foreignCalls = createForeignCallsProvider();
         p = createProviders(null, constantReflection, constantFieldProvider, foreignCalls, null, null, stampProvider, snippetReflection);
         LoweringProvider lowerer = createLoweringProvider(p);
@@ -94,9 +94,9 @@ public abstract class SharedRuntimeConfigurationBuilder {
         Replacements replacements = createReplacements(p, snippetReflection);
         p = createProviders(null, constantReflection, constantFieldProvider, foreignCalls, lowerer, replacements, stampProvider, snippetReflection);
 
-        EnumMap<ConfigKind, Backend> backends = new EnumMap<>(ConfigKind.class);
+        EnumMap<ConfigKind, SubstrateBackend> backends = new EnumMap<>(ConfigKind.class);
         for (ConfigKind config : ConfigKind.values()) {
-            RegisterConfig registerConfig = new SubstrateAMD64RegisterConfig(config, metaAccess, ConfigurationValues.getTarget());
+            RegisterConfig registerConfig = new SubstrateAMD64RegisterConfig(config, metaAccess, ConfigurationValues.getTarget(), SubstrateOptions.UseStackBasePointer.getValue());
             CodeCacheProvider codeCacheProvider = createCodeCacheProvider(registerConfig);
 
             Providers newProviders = createProviders(codeCacheProvider, constantReflection, constantFieldProvider, foreignCalls, lowerer, replacements, stampProvider,
@@ -130,7 +130,7 @@ public abstract class SharedRuntimeConfigurationBuilder {
     protected abstract ConstantFieldProvider createConstantFieldProvider(Providers p);
 
     protected SnippetReflectionProvider createSnippetReflectionProvider() {
-        return new SubstrateSnippetReflectionProvider();
+        return new SubstrateSnippetReflectionProvider(getWordTypes());
     }
 
     protected ForeignCallsProvider createForeignCallsProvider() {

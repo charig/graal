@@ -1,26 +1,42 @@
 /*
- * Copyright (c) 2016, Oracle and/or its affiliates. All rights reserved.
+ * Copyright (c) 2016, 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.api.debug;
 
@@ -122,16 +138,20 @@ public abstract class DebugValue {
     public abstract boolean isReadable();
 
     /**
-     * Returns <code>true</code> if this value can be read else <code>false</code>.
+     * Returns <code>true</code> if reading of this value can have side-effects, else
+     * <code>false</code>. Read has side-effects if it changes runtime state.
      *
-     * @see #as(Class)
-     * @since 0.17
-     * @deprecated Use {@link #isWritable()}
+     * @since 1.0
      */
-    @Deprecated
-    public final boolean isWriteable() {
-        return isWritable();
-    }
+    public abstract boolean hasReadSideEffects();
+
+    /**
+     * Returns <code>true</code> if setting a new value can have side-effects, else
+     * <code>false</code>. Write has side-effects if it changes runtime state besides this value.
+     *
+     * @since 1.0
+     */
+    public abstract boolean hasWriteSideEffects();
 
     /**
      * Returns <code>true</code> if this value can be written to, else <code>false</code>.
@@ -186,21 +206,21 @@ public abstract class DebugValue {
         }
         Object value = get();
         try {
-            return getProperties(value, getDebugger(), resolveLanguage(), null);
+            return getProperties(value, getSession(), resolveLanguage(), null);
         } catch (ThreadDeath td) {
             throw td;
         } catch (Throwable ex) {
-            throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+            throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
         }
     }
 
-    static ValuePropertiesCollection getProperties(Object value, Debugger debugger, LanguageInfo language, DebugScope scope) {
+    static ValuePropertiesCollection getProperties(Object value, DebuggerSession session, LanguageInfo language, DebugScope scope) {
         ValuePropertiesCollection properties = null;
         if (value instanceof TruffleObject) {
             TruffleObject object = (TruffleObject) value;
-            Map<Object, Object> map = ObjectStructures.asMap(debugger.getMessageNodes(), object);
+            Map<Object, Object> map = ObjectStructures.asMap(session.getDebugger().getMessageNodes(), object);
             if (map != null) {
-                properties = new ValuePropertiesCollection(debugger, language, object, map, map.entrySet(), scope);
+                properties = new ValuePropertiesCollection(session, language, object, map, map.entrySet(), scope);
             }
         }
         return properties;
@@ -228,12 +248,12 @@ public abstract class DebugValue {
                     return null;
                 } else {
                     Map.Entry<Object, Object> entry = new ObjectStructures.TruffleEntry(getDebugger().getMessageNodes(), object, name);
-                    return new DebugValue.PropertyValue(getDebugger(), resolveLanguage(), keyInfo, entry, null);
+                    return new DebugValue.PropertyValue(getSession(), resolveLanguage(), keyInfo, entry, null);
                 }
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
         } else {
             return null;
@@ -278,7 +298,7 @@ public abstract class DebugValue {
             TruffleObject to = (TruffleObject) value;
             List<Object> array = ObjectStructures.asList(getDebugger().getMessageNodes(), to);
             if (array != null) {
-                arrayList = new ValueInteropList(getDebugger(), resolveLanguage(), array);
+                arrayList = new ValueInteropList(getSession(), resolveLanguage(), array);
             }
         }
         return arrayList;
@@ -318,12 +338,12 @@ public abstract class DebugValue {
             try {
                 obj = env.findMetaObject(languageInfo, obj);
                 if (obj != null) {
-                    return new HeapValue(getDebugger(), languageInfo, null, obj);
+                    return new HeapValue(getSession(), languageInfo, null, obj);
                 }
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, languageInfo, null, true, null);
+                throw new DebugException(getSession(), ex, languageInfo, null, true, null);
             }
         }
         return null;
@@ -348,11 +368,12 @@ public abstract class DebugValue {
         LanguageInfo languageInfo = resolveLanguage();
         if (languageInfo != null) {
             try {
-                return env.findSourceLocation(languageInfo, obj);
+                SourceSection location = env.findSourceLocation(languageInfo, obj);
+                return getSession().resolveSection(location);
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, languageInfo, null, true, null);
+                throw new DebugException(getSession(), ex, languageInfo, null, true, null);
             }
         } else {
             return null;
@@ -374,7 +395,7 @@ public abstract class DebugValue {
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
         } else {
             return false;
@@ -422,7 +443,11 @@ public abstract class DebugValue {
 
     abstract DebugValue createAsInLanguage(LanguageInfo language);
 
-    abstract Debugger getDebugger();
+    abstract DebuggerSession getSession();
+
+    final Debugger getDebugger() {
+        return getSession().getDebugger();
+    }
 
     /**
      * Returns a string representation of the debug value.
@@ -437,17 +462,17 @@ public abstract class DebugValue {
     static class HeapValue extends DebugValue {
 
         // identifies the debugger and engine
-        private final Debugger debugger;
+        private final DebuggerSession session;
         private final String name;
-        private final Object value;
+        private Object value;
 
-        HeapValue(Debugger debugger, String name, Object value) {
-            this(debugger, null, name, value);
+        HeapValue(DebuggerSession session, String name, Object value) {
+            this(session, null, name, value);
         }
 
-        HeapValue(Debugger debugger, LanguageInfo preferredLanguage, String name, Object value) {
+        HeapValue(DebuggerSession session, LanguageInfo preferredLanguage, String name, Object value) {
             super(preferredLanguage);
-            this.debugger = debugger;
+            this.session = session;
             this.name = name;
             this.value = value;
         }
@@ -465,7 +490,7 @@ public abstract class DebugValue {
                     if (languageInfo == null) {
                         stringValue = val.toString();
                     } else {
-                        stringValue = debugger.getEnv().toString(languageInfo, val);
+                        stringValue = getDebugger().getEnv().toString(languageInfo, val);
                     }
                     return clazz.cast(stringValue);
                 } else if (clazz == Number.class || clazz == Boolean.class) {
@@ -474,7 +499,7 @@ public abstract class DebugValue {
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
             throw new UnsupportedOperationException();
         }
@@ -486,9 +511,9 @@ public abstract class DebugValue {
             }
             if (val instanceof TruffleObject) {
                 TruffleObject receiver = (TruffleObject) val;
-                if (ForeignAccess.sendIsBoxed(debugger.msgNodes.isBoxed, receiver)) {
+                if (ForeignAccess.sendIsBoxed(getDebugger().msgNodes.isBoxed, receiver)) {
                     try {
-                        Object unboxed = ForeignAccess.sendUnbox(debugger.msgNodes.unbox, receiver);
+                        Object unboxed = ForeignAccess.sendUnbox(getDebugger().msgNodes.unbox, receiver);
                         if (clazz.isInstance(unboxed)) {
                             return clazz.cast(unboxed);
                         }
@@ -507,12 +532,13 @@ public abstract class DebugValue {
 
         @Override
         public void set(DebugValue expression) {
-            throw new IllegalStateException("Value is not writable");
+            value = expression.get();
         }
 
         @Override
         public void set(Object primitiveValue) {
-            throw new IllegalStateException("Value is not writable");
+            checkPrimitive(primitiveValue);
+            value = primitiveValue;
         }
 
         @Override
@@ -527,6 +553,16 @@ public abstract class DebugValue {
 
         @Override
         public boolean isWritable() {
+            return true;
+        }
+
+        @Override
+        public boolean hasReadSideEffects() {
+            return false;
+        }
+
+        @Override
+        public boolean hasWriteSideEffects() {
             return false;
         }
 
@@ -537,12 +573,12 @@ public abstract class DebugValue {
 
         @Override
         DebugValue createAsInLanguage(LanguageInfo language) {
-            return new HeapValue(debugger, language, name, value);
+            return new HeapValue(session, language, name, value);
         }
 
         @Override
-        Debugger getDebugger() {
-            return debugger;
+        DebuggerSession getSession() {
+            return session;
         }
 
     }
@@ -553,12 +589,12 @@ public abstract class DebugValue {
         private final Map.Entry<Object, Object> property;
         private final DebugScope scope;
 
-        PropertyValue(Debugger debugger, LanguageInfo language, TruffleObject object, Map.Entry<Object, Object> property, DebugScope scope) {
-            this(debugger, language, ForeignAccess.sendKeyInfo(Message.KEY_INFO.createNode(), object, property.getKey()), property, scope);
+        PropertyValue(DebuggerSession session, LanguageInfo language, TruffleObject object, Map.Entry<Object, Object> property, DebugScope scope) {
+            this(session, language, ForeignAccess.sendKeyInfo(Message.KEY_INFO.createNode(), object, property.getKey()), property, scope);
         }
 
-        PropertyValue(Debugger debugger, LanguageInfo preferredLanguage, int keyInfo, Map.Entry<Object, Object> property, DebugScope scope) {
-            super(debugger, preferredLanguage, (property.getKey() instanceof String) ? (String) property.getKey() : null, null);
+        PropertyValue(DebuggerSession session, LanguageInfo preferredLanguage, int keyInfo, Map.Entry<Object, Object> property, DebugScope scope) {
+            super(session, preferredLanguage, (property.getKey() instanceof String) ? (String) property.getKey() : null, null);
             this.keyInfo = keyInfo;
             this.property = property;
             this.scope = scope;
@@ -572,7 +608,7 @@ public abstract class DebugValue {
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
         }
 
@@ -607,6 +643,18 @@ public abstract class DebugValue {
         }
 
         @Override
+        public boolean hasReadSideEffects() {
+            checkValid();
+            return KeyInfo.hasReadSideEffects(keyInfo);
+        }
+
+        @Override
+        public boolean hasWriteSideEffects() {
+            checkValid();
+            return KeyInfo.hasWriteSideEffects(keyInfo);
+        }
+
+        @Override
         public boolean isInternal() {
             checkValid();
             return KeyInfo.isInternal(keyInfo);
@@ -626,7 +674,7 @@ public abstract class DebugValue {
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
         }
 
@@ -637,13 +685,13 @@ public abstract class DebugValue {
             try {
                 property.setValue(primitiveValue);
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
         }
 
         @Override
         DebugValue createAsInLanguage(LanguageInfo language) {
-            return new PropertyValue(getDebugger(), language, keyInfo, property, scope);
+            return new PropertyValue(getSession(), language, keyInfo, property, scope);
         }
 
         private void checkValid() {
@@ -659,14 +707,14 @@ public abstract class DebugValue {
         private final Map<Object, Object> map;
         private final DebugScope scope;
 
-        PropertyNamedValue(Debugger debugger, LanguageInfo language, TruffleObject object,
+        PropertyNamedValue(DebuggerSession session, LanguageInfo language, TruffleObject object,
                         Map<Object, Object> map, String name, DebugScope scope) {
-            this(debugger, language, ForeignAccess.sendKeyInfo(Message.KEY_INFO.createNode(), object, name), map, name, scope);
+            this(session, language, ForeignAccess.sendKeyInfo(Message.KEY_INFO.createNode(), object, name), map, name, scope);
         }
 
-        private PropertyNamedValue(Debugger debugger, LanguageInfo preferredLanguage,
+        private PropertyNamedValue(DebuggerSession session, LanguageInfo preferredLanguage,
                         int keyInfo, Map<Object, Object> map, String name, DebugScope scope) {
-            super(debugger, preferredLanguage, name, null);
+            super(session, preferredLanguage, name, null);
             this.keyInfo = keyInfo;
             this.map = map;
             this.scope = scope;
@@ -680,7 +728,7 @@ public abstract class DebugValue {
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
         }
 
@@ -703,6 +751,18 @@ public abstract class DebugValue {
         }
 
         @Override
+        public boolean hasReadSideEffects() {
+            checkValid();
+            return KeyInfo.hasReadSideEffects(keyInfo);
+        }
+
+        @Override
+        public boolean hasWriteSideEffects() {
+            checkValid();
+            return KeyInfo.hasWriteSideEffects(keyInfo);
+        }
+
+        @Override
         public boolean isInternal() {
             checkValid();
             return KeyInfo.isInternal(keyInfo);
@@ -716,7 +776,7 @@ public abstract class DebugValue {
             } catch (ThreadDeath td) {
                 throw td;
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
         }
 
@@ -727,13 +787,13 @@ public abstract class DebugValue {
             try {
                 map.put(getName(), primitiveValue);
             } catch (Throwable ex) {
-                throw new DebugException(getDebugger(), ex, resolveLanguage(), null, true, null);
+                throw new DebugException(getSession(), ex, resolveLanguage(), null, true, null);
             }
         }
 
         @Override
         DebugValue createAsInLanguage(LanguageInfo language) {
-            return new PropertyNamedValue(getDebugger(), language, keyInfo, map, getName(), scope);
+            return new PropertyNamedValue(getSession(), language, keyInfo, map, getName(), scope);
         }
 
         private void checkValid() {

@@ -37,19 +37,25 @@ import com.oracle.svm.core.util.VMError;
 
 import jdk.vm.ci.meta.JavaConstant;
 import jdk.vm.ci.meta.JavaType;
+import jdk.vm.ci.meta.MetaAccessProvider;
 import jdk.vm.ci.meta.ResolvedJavaMethod;
+import sun.reflect.annotation.TypeNotPresentExceptionProxy;
 
 public class AnnotationSubstitutionField extends CustomSubstitutionField {
 
     private final ResolvedJavaMethod accessorMethod;
     private final Map<JavaConstant, JavaConstant> valueCache;
     private final SnippetReflectionProvider snippetReflection;
+    private final MetaAccessProvider metaAccess;
 
-    public AnnotationSubstitutionField(AnnotationSubstitutionType declaringClass, ResolvedJavaMethod accessorMethod, SnippetReflectionProvider snippetReflection) {
+    public AnnotationSubstitutionField(AnnotationSubstitutionType declaringClass, ResolvedJavaMethod accessorMethod,
+                    SnippetReflectionProvider snippetReflection,
+                    MetaAccessProvider metaAccess) {
         super(declaringClass);
         this.accessorMethod = accessorMethod;
         this.snippetReflection = snippetReflection;
-        this.valueCache = Collections.synchronizedMap(new HashMap<JavaConstant, JavaConstant>());
+        this.valueCache = Collections.synchronizedMap(new HashMap<>());
+        this.metaAccess = metaAccess;
     }
 
     @Override
@@ -59,26 +65,67 @@ public class AnnotationSubstitutionField extends CustomSubstitutionField {
 
     @Override
     public JavaType getType() {
-        return accessorMethod.getSignature().getReturnType(accessorMethod.getDeclaringClass());
+        /*
+         * The type of an annotation element can be one of: primitive, String, Class, an enum type,
+         * an annotation type, or an array type whose component type is one of the preceding types,
+         * according to https://docs.oracle.com/javase/specs/jls/se8/html/jls-9.html#jls-9.6.1.
+         */
+        JavaType actualType = accessorMethod.getSignature().getReturnType(accessorMethod.getDeclaringClass());
+        if (AnnotationSupport.isClassType(actualType, metaAccess)) {
+            /*
+             * Annotation elements that have a Class type can reference classes that are missing at
+             * runtime. We declare the corresponding fields with the Object type to be able to store
+             * a TypeNotPresentExceptionProxy which we then use to generate the
+             * TypeNotPresentException at runtime (see bellow).
+             */
+            return metaAccess.lookupJavaType(Object.class);
+        }
+        return actualType;
     }
 
     @Override
     public JavaConstant readValue(JavaConstant receiver) {
         JavaConstant result = valueCache.get(receiver);
         if (result == null) {
+            Object annotationFieldValue;
+            /*
+             * Invoke the accessor method of the annotation object. Since array attributes return a
+             * different, newly allocated, array at every invocation, we cache the result value.
+             */
             try {
                 /*
-                 * Invoke the accessor method of the annotation object. Since array attributes
-                 * return a different, newly allocated, array at every invocation, we cache the
-                 * result value.
+                 * The code bellow assumes that the annotations have already been parsed and the
+                 * result cached in the AnnotationInvocationHandler.memberValues field. The parsing
+                 * is triggered, at the least, during object graph checking in
+                 * Inflation.checkType(), or earlier when the type annotations are accessed for the
+                 * first time, e.g., ImageClassLoader.includedInPlatform() due to the call to
+                 * Class.getAnnotation(Platforms.class).
                  */
                 Proxy proxy = snippetReflection.asObject(Proxy.class, receiver);
                 Method reflectionMethod = proxy.getClass().getDeclaredMethod(accessorMethod.getName());
                 reflectionMethod.setAccessible(true);
-                result = snippetReflection.forBoxed(getJavaKind(), reflectionMethod.invoke(proxy));
-            } catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException | NoSuchMethodException ex) {
+                annotationFieldValue = reflectionMethod.invoke(proxy);
+            } catch (IllegalAccessException | IllegalArgumentException | NoSuchMethodException ex) {
                 throw VMError.shouldNotReachHere(ex);
+            } catch (InvocationTargetException ex) {
+                Throwable cause = ex.getCause();
+                if (cause instanceof TypeNotPresentException) {
+                    /*
+                     * When an annotation has a Class<?> parameter but is referencing a missing
+                     * class a TypeNotPresentException is thrown. The TypeNotPresentException is
+                     * usually created when the annotation is first parsed, i.e., one some other
+                     * parameter is queried, and cached as an TypeNotPresentExceptionProxy. We catch
+                     * and repackage it here, then rely on the runtime mechanism to unpack and
+                     * rethrow it.
+                     */
+                    TypeNotPresentException tnpe = (TypeNotPresentException) cause;
+                    annotationFieldValue = new TypeNotPresentExceptionProxy(tnpe.typeName(), new NoClassDefFoundError(tnpe.typeName()));
+                } else {
+                    throw VMError.shouldNotReachHere(ex);
+                }
             }
+
+            result = snippetReflection.forBoxed(getJavaKind(), annotationFieldValue);
 
             valueCache.put(receiver, result);
         }

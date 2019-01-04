@@ -41,11 +41,13 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
+import org.graalvm.compiler.debug.GraalError;
 import org.graalvm.compiler.graph.Node;
 import org.graalvm.word.WordBase;
 
 import com.oracle.graal.pointsto.BigBang;
 import com.oracle.graal.pointsto.BigBang.ConstantObjectsProfiler;
+import com.oracle.graal.pointsto.api.AnnotationAccess;
 import com.oracle.graal.pointsto.api.DefaultUnsafePartition;
 import com.oracle.graal.pointsto.api.PointstoOptions;
 import com.oracle.graal.pointsto.api.UnsafePartitionKind;
@@ -83,6 +85,7 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
     private boolean isInHeap;
     private boolean isAllocated;
     private boolean isInTypeCheck;
+    private boolean reachabilityListenerNotified;
     private boolean unsafeFieldsRecomputed;
     private boolean unsafeAccessedFieldsRegistered;
 
@@ -144,6 +147,12 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
     /* isArray is an expensive operation so we eagerly compute it */
     private boolean isArray;
 
+    public enum UsageKind {
+        InHeap,
+        Allocated,
+        InTypeCheck;
+    }
+
     AnalysisType(AnalysisUniverse universe, ResolvedJavaType javaType, JavaKind storageKind, AnalysisType objectType) {
         this.universe = universe;
         this.wrapped = javaType;
@@ -152,36 +161,6 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
         this.unsafeAccessedFieldsRegistered = false;
         if (universe.hostVM.analysisPolicy().needsConstantCache()) {
             this.constantObjectsCache = new ConcurrentHashMap<>();
-        }
-
-        /*
-         * Eagerly ask the wrapped type to lookup the declared constructors. This will discover
-         * early any class resolution problems caused by missing parameter types. We cannot cache
-         * the result as AnalysisMethod[], i.e., by calling universe.lookup(JavaMethod[]), because
-         * that would lead to a deadlock, but we could cache it as ResolvedJavaMethod[] which we can
-         * later use in AnalysisType.getDeclaredConstructors().
-         */
-        wrapped.getDeclaredConstructors();
-        /*
-         * Eagerly resolve the enclosing type. It is possible that we are dealing with an incomplete
-         * classpath. While normally JVM doesn't care about missing classes unless they are really
-         * used the analysis is eager to load all reachable classes. The analysis client should deal
-         * with type resolution problems.
-         * 
-         * We cannot cache the result as an AnalysisType, i.e., by calling
-         * universe.lookup(JavaType), because that could lead to a deadlock.
-         */
-        wrapped.getEnclosingType();
-
-        /*
-         * Eagerly resolve the instance fields. The wrapped type caches the result, so when
-         * AnalysisType.getInstanceFields(boolean) is called it will use that cached result. We
-         * cannot call AnalysisType.getInstanceFields(boolean), and create the corresponding
-         * AnalysisField objects, directly here because that could lead to a deadlock.
-         */
-        for (ResolvedJavaField field : wrapped.getInstanceFields(false)) {
-            /* Eagerly resolve the field declared type. */
-            field.getType();
         }
 
         /* Ensure the super types as well as the component type (for arrays) is created too. */
@@ -516,6 +495,7 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
     public void registerAsInHeap() {
         assert isArray() || (isInstanceClass() && !Modifier.isAbstract(getModifiers()));
         isInHeap = true;
+        universe.hostVM.checkForbidden(this, UsageKind.InHeap);
     }
 
     /**
@@ -526,10 +506,20 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
         if (!isAllocated) {
             isAllocated = true;
         }
+        universe.hostVM.checkForbidden(this, UsageKind.Allocated);
     }
 
     public void registerAsInTypeCheck() {
         isInTypeCheck = true;
+        universe.hostVM.checkForbidden(this, UsageKind.InTypeCheck);
+    }
+
+    public boolean getReachabilityListenerNotified() {
+        return reachabilityListenerNotified;
+    }
+
+    public void setReachabilityListenerNotified(boolean reachabilityListenerNotified) {
+        this.reachabilityListenerNotified = reachabilityListenerNotified;
     }
 
     /**
@@ -669,6 +659,10 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
         return universe.substitutions.resolve(wrapped);
     }
 
+    public ResolvedJavaType getWrappedWithoutResolve() {
+        return wrapped;
+    }
+
     @Override
     public Class<?> getJavaClass() {
         return OriginalClassProvider.getJavaClass(universe.getOriginalSnippetReflection(), wrapped);
@@ -703,13 +697,14 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
 
     @Override
     public final boolean isInitialized() {
-        assert wrapped.isInitialized();
-        return true;
+        return universe.hostVM.isInitialized(this);
     }
 
     @Override
     public void initialize() {
-        assert wrapped.isInitialized();
+        if (!wrapped.isInitialized()) {
+            throw GraalError.shouldNotReachHere("Classes can only be initialized using methods in ClassInitializationFeature");
+        }
     }
 
     @Override
@@ -895,17 +890,17 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
 
     @Override
     public Annotation[] getAnnotations() {
-        return wrapped.getAnnotations();
+        return AnnotationAccess.getAnnotations(wrapped);
     }
 
     @Override
     public Annotation[] getDeclaredAnnotations() {
-        return wrapped.getDeclaredAnnotations();
+        return AnnotationAccess.getDeclaredAnnotations(wrapped);
     }
 
     @Override
     public <T extends Annotation> T getAnnotation(Class<T> annotationClass) {
-        return wrapped.getAnnotation(annotationClass);
+        return AnnotationAccess.getAnnotation(wrapped, annotationClass);
     }
 
     @Override
@@ -956,7 +951,7 @@ public class AnalysisType implements WrappedJavaType, OriginalClassProvider, Com
     }
 
     @Override
-    public ResolvedJavaMethod getClassInitializer() {
+    public AnalysisMethod getClassInitializer() {
         return universe.lookup(wrapped.getClassInitializer());
     }
 

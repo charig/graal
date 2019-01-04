@@ -778,7 +778,6 @@ public final class PosixJavaNIOSubstitutions {
         // 233 Java_sun_nio_ch_Net_socket0(JNIEnv *env, jclass cl, jboolean preferIPv6,
         // 234                             jboolean stream, jboolean reuse)
         // 235 {
-        @SuppressWarnings("finally")
         @Substitute
         static int socket0(boolean preferIPv6, boolean stream, boolean reuse, @SuppressWarnings("unused") boolean fastLoopback) throws IOException {
             // 236     int fd;
@@ -817,7 +816,6 @@ public final class PosixJavaNIOSubstitutions {
                         // 258             close(fd);
                         Unistd.close(fd);
                         // 259             return -1;
-                        return -1;
                     }
                 }
             }
@@ -839,7 +837,6 @@ public final class PosixJavaNIOSubstitutions {
                         // 271             close(fd);
                         Unistd.close(fd);
                         // 272             return -1;
-                        return -1;
                     }
                 }
             }
@@ -866,7 +863,6 @@ public final class PosixJavaNIOSubstitutions {
                             // 285             close(fd);
                             Unistd.close(fd);
                             // 286             return -1;
-                            return -1;
                         }
                     }
                 }
@@ -892,7 +888,6 @@ public final class PosixJavaNIOSubstitutions {
                             // 300             close(fd);
                             Unistd.close(fd);
                             // 301             return -1;
-                            return -1;
                         }
                     }
                 }
@@ -1559,6 +1554,20 @@ public final class PosixJavaNIOSubstitutions {
         private static void init() {
             throw new InternalError("init() is only called from static initializers, so not reachable in Substrate VM");
         }
+
+        @Substitute
+        @TargetElement(onlyWith = JDK9OrLater.class)
+        private static long seek0(FileDescriptor fd, long offset) throws IOException {
+            int f = fdval(fd);
+            long result = 0;
+
+            if (offset < 0) {
+                result = lseek(f, WordFactory.zero(), SEEK_CUR()).rawValue();
+            } else {
+                result = lseek(f, WordFactory.signed(offset), SEEK_SET()).rawValue();
+            }
+            return handle(result, "lseek failed");
+        }
     }
 
     static final class Util_sun_nio_ch_FileDispatcherImpl {
@@ -1977,6 +1986,37 @@ public final class PosixJavaNIOSubstitutions {
             } else {
                 Util_sun_nio_fs_UnixNativeDispatcher.prepAttributes(buf, attrs);
             }
+        }
+
+        @Substitute
+        @TargetElement(onlyWith = JDK9OrLater.class)
+        private static int stat1(long pathAddress) {
+            int err;
+            Stat.stat buf = StackValue.get(Stat.stat.class);
+            CCharPointer path = WordFactory.pointer(pathAddress);
+
+            do {
+                err = Stat.stat(path, buf);
+            } while ((err == -1) && (errno() == EINTR()));
+
+            if (err == -1) {
+                return 0;
+            } else {
+                return buf.st_mode();
+            }
+        }
+
+        @Substitute
+        @TargetElement(onlyWith = JDK9OrLater.class)
+        private static boolean exists0(long pathAddress) {
+            int err;
+
+            CCharPointer path = WordFactory.pointer(pathAddress);
+            do {
+                err = Unistd.access(path, Unistd.F_OK());
+            } while ((err == -1) && (errno() == EINTR()));
+
+            return err == 0;
         }
 
         @Substitute

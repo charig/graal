@@ -2,25 +2,41 @@
  * Copyright (c) 2018, Oracle and/or its affiliates. All rights reserved.
  * DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
  *
- * This code is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 only, as
- * published by the Free Software Foundation.  Oracle designates this
- * particular file as subject to the "Classpath" exception as provided
- * by Oracle in the LICENSE file that accompanied this code.
+ * The Universal Permissive License (UPL), Version 1.0
  *
- * This code is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * version 2 for more details (a copy is included in the LICENSE file that
- * accompanied this code).
+ * Subject to the condition set forth below, permission is hereby granted to any
+ * person obtaining a copy of this software, associated documentation and/or
+ * data (collectively the "Software"), free of charge and under any and all
+ * copyright rights in the Software, and any and all patent rights owned or
+ * freely licensable by each licensor hereunder covering either (i) the
+ * unmodified Software as contributed to or provided by such licensor, or (ii)
+ * the Larger Works (as defined below), to deal in both
  *
- * You should have received a copy of the GNU General Public License version
- * 2 along with this work; if not, write to the Free Software Foundation,
- * Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA.
+ * (a) the Software, and
  *
- * Please contact Oracle, 500 Oracle Parkway, Redwood Shores, CA 94065 USA
- * or visit www.oracle.com if you need additional information or have any
- * questions.
+ * (b) any piece of software and/or hardware listed in the lrgrwrks.txt file if
+ * one is included with the Software each a "Larger Work" to which the Software
+ * is contributed by such licensors),
+ *
+ * without restriction, including without limitation the rights to copy, create
+ * derivative works of, display, perform, and distribute the Software and make,
+ * use, sell, offer for sale, import, export, have made, and have sold the
+ * Software and the Larger Work(s), and to sublicense the foregoing rights on
+ * either these or other terms.
+ *
+ * This license is subject to the following condition:
+ *
+ * The above copyright notice and either this complete permission notice or at a
+ * minimum a reference to the UPL must be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 package com.oracle.truffle.polyglot;
 
@@ -48,21 +64,18 @@ import org.graalvm.polyglot.io.FileSystem;
 final class FileSystems {
 
     static final String FILE_SCHEME = "file";
-    private static final AtomicReference<FileSystem> DEFAULT_FILE_SYSTEM = new AtomicReference<>();
+    private static final AtomicReference<FileSystemProvider> DEFAULT_FILE_SYSTEM_PROVIDER = new AtomicReference<>();
 
     private FileSystems() {
         throw new IllegalStateException("No instance allowed");
     }
 
-    static FileSystem getDefaultFileSystem() {
-        FileSystem fs = DEFAULT_FILE_SYSTEM.get();
-        if (fs == null) {
-            fs = FileSystems.newFileSystem(findDefaultFileSystemProvider());
-            if (!DEFAULT_FILE_SYSTEM.compareAndSet(null, fs)) {
-                fs = DEFAULT_FILE_SYSTEM.get();
-            }
-        }
-        return fs;
+    static FileSystem newDefaultFileSystem() {
+        return FileSystems.newFileSystem(findDefaultFileSystemProvider());
+    }
+
+    static FileSystem newDefaultFileSystem(Path userDir) {
+        return newFileSystem(findDefaultFileSystemProvider(), userDir);
     }
 
     static FileSystem newNoIOFileSystem() {
@@ -73,25 +86,37 @@ final class FileSystems {
         return new DeniedIOFileSystem(userDir);
     }
 
-    static FileSystem newFullIOFileSystem(Path userDir) {
-        return newFileSystem(findDefaultFileSystemProvider(), userDir);
+    static boolean isDefaultFileSystem(FileSystem fileSystem) {
+        return fileSystem != null && fileSystem.getClass() == NIOFileSystem.class && FILE_SCHEME.equals(((NIOFileSystem) fileSystem).delegate.getScheme());
     }
 
-    static FileSystem newFileSystem(final FileSystemProvider fileSystemProvider) {
+    static boolean isNoIOFileSystem(FileSystem fileSystem) {
+        return fileSystem != null && fileSystem.getClass() == DeniedIOFileSystem.class;
+    }
+
+    private static FileSystem newFileSystem(final FileSystemProvider fileSystemProvider) {
         return new NIOFileSystem(fileSystemProvider);
     }
 
-    static FileSystem newFileSystem(final FileSystemProvider fileSystemProvider, final Path userDir) {
+    private static FileSystem newFileSystem(final FileSystemProvider fileSystemProvider, final Path userDir) {
         return new NIOFileSystem(fileSystemProvider, userDir);
     }
 
     private static FileSystemProvider findDefaultFileSystemProvider() {
-        for (FileSystemProvider fsp : FileSystemProvider.installedProviders()) {
-            if (FILE_SCHEME.equals(fsp.getScheme())) {
-                return fsp;
+        FileSystemProvider defaultFsProvider = DEFAULT_FILE_SYSTEM_PROVIDER.get();
+        if (defaultFsProvider == null) {
+            for (FileSystemProvider fsp : FileSystemProvider.installedProviders()) {
+                if (FILE_SCHEME.equals(fsp.getScheme())) {
+                    defaultFsProvider = fsp;
+                    break;
+                }
             }
+            if (defaultFsProvider == null) {
+                throw new IllegalStateException("No FileSystemProvider for scheme 'file'.");
+            }
+            DEFAULT_FILE_SYSTEM_PROVIDER.set(defaultFsProvider);
         }
-        throw new IllegalStateException("No FileSystemProvider for scheme 'file'.");
+        return defaultFsProvider;
     }
 
     private static boolean isFollowLinks(final LinkOption... linkOptions) {
@@ -108,7 +133,7 @@ final class FileSystems {
         private FileSystem delegate; // effectively final after patch context
 
         PreInitializeContextFileSystem() {
-            this.delegate = newFullIOFileSystem(null);
+            this.delegate = newDefaultFileSystem(null);
         }
 
         void patchDelegate(final FileSystem newDelegate) {
@@ -195,13 +220,18 @@ final class FileSystems {
         public Path readSymbolicLink(Path link) throws IOException {
             return delegate.readSymbolicLink(link);
         }
+
+        @Override
+        public void setCurrentWorkingDirectory(Path currentWorkingDirectory) {
+            delegate.setCurrentWorkingDirectory(currentWorkingDirectory);
+        }
     }
 
     private static final class NIOFileSystem implements FileSystem {
 
         private final FileSystemProvider delegate;
         private final boolean explicitUserDir;
-        private final Path userDir;
+        private volatile Path userDir;
 
         NIOFileSystem(final FileSystemProvider fileSystemProvider) {
             this(fileSystemProvider, false, null);
@@ -307,14 +337,24 @@ final class FileSystems {
             if (path.isAbsolute()) {
                 return path;
             }
-            if (explicitUserDir) {
-                if (userDir == null) {
+            Path cwd = userDir;
+            if (cwd == null) {
+                if (explicitUserDir) {  // Forbidden read of current working directory
                     throw new SecurityException("Access to user.dir is not allowed.");
                 }
-                return userDir.resolve(path);
-            } else {
                 return path.toAbsolutePath();
+            } else {
+                return cwd.resolve(path);
             }
+        }
+
+        @Override
+        public void setCurrentWorkingDirectory(Path currentWorkingDirectory) {
+            Objects.requireNonNull(currentWorkingDirectory, "Current working directory must be non null.");
+            if (explicitUserDir && userDir == null) { // Forbidden set of current working directory
+                throw new SecurityException("Modification of current working directory is not allowed.");
+            }
+            userDir = currentWorkingDirectory;
         }
 
         @Override
@@ -324,28 +364,20 @@ final class FileSystems {
         }
 
         private Path resolveRelative(Path path) {
-            return explicitUserDir ? toAbsolutePath(path) : path;
+            return !path.isAbsolute() && userDir != null ? toAbsolutePath(path) : path;
         }
     }
 
     private static final class DeniedIOFileSystem implements FileSystem {
-        private final Path userDir;
-        private final boolean explicitUserDir;
         private final FileSystem fullIO;
         private volatile Set<Path> languageHomes;
 
         DeniedIOFileSystem() {
-            this(null, false);
+            this.fullIO = newDefaultFileSystem();
         }
 
         DeniedIOFileSystem(final Path userDir) {
-            this(userDir, true);
-        }
-
-        private DeniedIOFileSystem(final Path userDir, final boolean explicitUserDir) {
-            this.userDir = userDir;
-            this.explicitUserDir = explicitUserDir;
-            this.fullIO = FileSystems.getDefaultFileSystem();
+            this.fullIO = newDefaultFileSystem(userDir);
         }
 
         @Override
@@ -435,17 +467,12 @@ final class FileSystems {
 
         @Override
         public Path toAbsolutePath(Path path) {
-            if (path.isAbsolute()) {
-                return path;
-            }
-            if (explicitUserDir) {
-                if (userDir == null) {
-                    throw new SecurityException("Access to 'user.dir' is not allowed.");
-                }
-                return userDir.resolve(path);
-            } else {
-                return path.toAbsolutePath();
-            }
+            return fullIO.toAbsolutePath(path);
+        }
+
+        @Override
+        public void setCurrentWorkingDirectory(Path currentWorkingDirectory) {
+            fullIO.setCurrentWorkingDirectory(currentWorkingDirectory);
         }
 
         @Override
